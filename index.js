@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { BasicCompactionEngine } from "@deepseek-ai/dsh-compaction-basic";
 import { CompactionId, compactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore } from "@deepseek-ai/dsh-compaction";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { buildCard, planMessages, RAIL_TOKENS } from "./plan.js";
+import { buildCard, buildNotice, planMessages, RAIL_TOKENS } from "./plan.js";
 import { buildSendLess, decideThunder } from "./thunder.js";
 
 const MARK = "Spine extract.";
 const SUMMARY_OPEN_TAG = "<compacted-summary>";
 const SUMMARY_CLOSE_TAG = "</compacted-summary>";
-const CHECKPOINT_PREAMBLE = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
+const CHECKPOINT_PREAMBLE = "An earlier span of this conversation was compacted into this checkpoint; read the shadow file named below if you need its original text.";
 const CHUNK_MIN = 1000;
 const CHUNK_MAX = RAIL_TOKENS;
 const BIG_GATE = 650000;
@@ -237,7 +237,7 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
     const shadowedSeqs = nodes.slice(startIdx, endIdx + 1);
     const messages = [];
     for (const seq of shadowedSeqs) messages.push({ role: "assistant", content: eventText(session, seq) });
-    const summarized = await this.summarize({ messages }, agent, signal);
+    const summarized = await this.summarize({ messages, tokens: chunk.tokens }, agent, signal);
     const compactionId = CompactionId(randomUUID());
     const checkpointMessage = createUserMessage({
       content: [
@@ -287,6 +287,11 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
     return super.compactIfNeeded(agent, trigger, signal);
   }
 
+  withNotice(result, noticeBlock) {
+    const original = result?.summary;
+    return { ...result, summary: [noticeBlock], ...original === undefined ? {} : { rawOutput: original } };
+  }
+
   async summarize(input, agent, signal) {
     const joined = input.messages.map(messageText).join("\n\n");
     const state = this.stateFor(agent);
@@ -296,12 +301,13 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
     mkdirSync(shadow, { recursive: true });
     const file = join(shadow, shadowName(state.key, joined.length));
     writeFileSync(file, joined);
+    const tokens = Number.isSafeInteger(input?.tokens) && input.tokens > 0 ? input.tokens : Math.max(1, Math.ceil(joined.length / 4));
+    const noticeBlock = { type: "text", text: buildNotice({ tokens, shadowPath: file }) };
+    const cardBlock = { type: "text", text: `${card.text}\nFull shadowed text: ${file}` };
     if (state.localOnly || card.route === "local") {
-      const text = `${card.text}\nFull shadowed text: ${file}`;
-      const block = { type: "text", text };
-      return { summary: [block], provider: "local", model: "spine-extract", rawOutput: [block] };
+      return { summary: [noticeBlock], provider: "local", model: "spine-extract", rawOutput: [cardBlock] };
     }
-    if (process.env.SPINE_THUNDER !== "1") return super.summarize(input, agent, signal);
+    if (process.env.SPINE_THUNDER !== "1") return this.withNotice(await super.summarize(input, agent, signal), noticeBlock);
     const next = joined;
     const mode = decideThunder({
       previous: state.lastPrefix || "",
@@ -309,15 +315,15 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
       modelKind: process.env.SPINE_THUNDER_MODEL === "27b" ? "27b" : "flash",
       prefixTokens: state.lastPrefixTokens || 0,
     });
-    if (mode === "attach") return super.summarize(input, agent, signal);
+    if (mode === "attach") return this.withNotice(await super.summarize(input, agent, signal), noticeBlock);
     const users = input.messages.filter((message) => (message?.role ?? message?.message?.role) === "user");
     const taskLine = messageText(users.at(-1) || input.messages.at(-1)).slice(0, 500);
     const trunk = buildCard(joined, "");
     const facts = [...new Set([...(trunk.hardLines || []), ...(trunk.missing || [])])];
     const slim = buildSendLess({ taskLine, uncovered: trunk.uncovered, facts });
-    return super.summarize({
+    return this.withNotice(await super.summarize({
       ...input,
       messages: [{ role: "user", content: [{ type: "text", text: slim }] }],
-    }, agent, signal);
+    }, agent, signal), noticeBlock);
   }
 }

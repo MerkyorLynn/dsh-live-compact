@@ -243,3 +243,52 @@ export function planMessages(messages) {
     ].join("\n"),
   };
 }
+
+// 提示行禁用的字符：聊天区会把它们读成公式、强调或链接；换行会毁掉单行形态。
+// Characters banned from the notice: chat Markdown reads them as math, emphasis or
+// links, and a line break would destroy the single-line shape.
+const NOTICE_BANNED = /[$`*\[\]\r\n]/;
+// 绝对路径判定：POSIX 根、Windows 盘符、UNC 共享。
+// Absolute path test: POSIX root, Windows drive letter, UNC share.
+const NOTICE_ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/])/;
+
+/**
+ * 生成落地到会话的一行提示：只说明切分发生、释放的 token 数、可回读的原文路径。
+ * Build the one-line notice written into the conversation: that a cut happened, how
+ * many tokens were released, and the absolute path that can be read back.
+ *
+ * tokens 必须是安全正整数，按十进制原样输出，不加千分位，避免被误读。
+ * tokens must be a safe positive integer, printed verbatim in decimal with no
+ * separators so it cannot be misread.
+ *
+ * shadowPath 必须是绝对路径并原样出现。若路径本身带 Markdown 元字符或换行，则
+ * 「原样出现」与「提示不含这些字符」无法同时成立，因此按参数非法拒绝。
+ * shadowPath must be absolute and appears verbatim. A path carrying Markdown
+ * metacharacters or a line break is rejected as invalid input, because verbatim
+ * output and a character-free notice cannot both hold.
+ *
+ * @param {{ tokens?: unknown, shadowPath?: unknown }} [input]
+ * @returns {string}
+ */
+export function buildNotice({ tokens, shadowPath } = {}) {
+  if (
+    typeof tokens !== "number" ||
+    !Number.isSafeInteger(tokens) ||
+    tokens <= 0
+  ) {
+    throw new TypeError("buildNotice: tokens must be a positive integer");
+  }
+  if (
+    typeof shadowPath !== "string" ||
+    shadowPath.length === 0 ||
+    !NOTICE_ABSOLUTE.test(shadowPath)
+  ) {
+    throw new TypeError("buildNotice: shadowPath must be an absolute path");
+  }
+  if (NOTICE_BANNED.test(shadowPath)) {
+    throw new TypeError(
+      "buildNotice: shadowPath must not contain $, backtick, *, brackets, or a line break",
+    );
+  }
+  return `已切分压缩 ${tokens} tokens（原文：${shadowPath}）`;
+}

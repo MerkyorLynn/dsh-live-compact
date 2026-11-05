@@ -24,6 +24,7 @@ import { attachBackupHint, backgroundJobId, backupClaimOk, buildCard, chooseKept
 import { captureToolResult, rawExcerptText, restoreToolText, runPruneAfterCapture, verifiedRaw } from "./raw.js";
 import { recordCutStats, rotateShadow, sessionDir, shadowFileBody, shadowMaxBytes } from "./shadow.js";
 import { buildSendLess, decideThunder } from "./thunder.js";
+import { OFFICIAL_COMPACTION_KIND, inCooldown, lastSourceKindSeq, resolveCooldownMs } from "./cooldown.js";
 
 const MARK = "Spine extract.";
 const SPINE_SOURCE_KIND = "spine-checkpoint";
@@ -37,6 +38,7 @@ const MAX_TAIL = 2200;
 const MIN_PRESSURE = Number(process.env.SPINE_MIN_TOKENS || 20000);
 const KEEP_ROUNDS = Number(process.env.SPINE_KEEP_ROUNDS || 3);
 const KEEP_ROUND_TOKENS = Number(process.env.SPINE_KEEP_ROUND_TOKENS || 32000);
+const COOLDOWN_MS = resolveCooldownMs(); // 额外的时间兜底；0 = 只用 seq 一次性跳过
 const MAX_TRACKED_SESSIONS = 64;
 const DEFAULT_KEY = "__default__";
 
@@ -383,6 +385,15 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
         const op = AbortSignal.any([agentSignal, signal]);
         const measurement = this.ctx.tokenMeter.measure(agent.session);
         if (measurement.totalTokens < MIN_PRESSURE || measurement.totalTokens >= BIG_GATE) return;
+        // 官方压缩后的第一次 idle 先让一让，免得紧接着又把它产出的摘要卷走。
+        // 主判据是「这条官方卡片处理过没有」（与实际间隔多久无关），时间窗口只作可选兜底。
+        const officialSeq = lastSourceKindSeq(agent.session, OFFICIAL_COMPACTION_KIND);
+        if (officialSeq !== undefined && state.cooldownSeenSeq !== officialSeq) {
+          state.cooldownSeenSeq = officialSeq;
+          this.ctx.logger?.info?.(`spine cooldown: official compaction ${officialSeq} seen, skip this pass`);
+          return;
+        }
+        if (inCooldown(agent.session, { windowMs: COOLDOWN_MS })) return;
         this.ensurePruneGuard();
         this.captureSession(agent.session);
         const resolved = this.engineFor(agent);

@@ -122,6 +122,19 @@ try {
                         $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
                     [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
                         ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
+                    for ($attempt = 0; $attempt -lt 14; $attempt++) {
+                        try {
+                            $active = @(Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2 |
+                                Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl }) | Select-Object -First 1
+                            if ($active -and (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'CandidateDetails')) {
+                                Start-Sleep -Seconds 2
+                                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port |
+                                    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'candidate-details-proof.json')
+                                break
+                            }
+                        } catch {}
+                        Start-Sleep -Seconds 3
+                    }
                 }
                 break
             }

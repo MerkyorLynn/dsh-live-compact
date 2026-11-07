@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { cleanEnv, command, here, json, npmCli, save, sha256, verifyCandidate, version } from './common.mjs';
+import { cleanEnv, command, here, json, npmCli, repository, save, sha256, verifyCandidate, version } from './common.mjs';
 import { overlay, replayEntries, writeInputs } from './scenario.mjs';
 import { verifyStage } from './verify.mjs';
 

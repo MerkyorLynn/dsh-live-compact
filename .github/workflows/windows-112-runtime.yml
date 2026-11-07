@@ -1,0 +1,52 @@
+name: Disposable Windows 1.1.2 runtime verification
+on:
+  push:
+    branches: [validation/112-windows-runtime]
+permissions:
+  contents: read
+jobs:
+  runtime:
+    if: github.ref == 'refs/heads/validation/112-windows-runtime' && contains(github.event.head_commit.message, '[windows-runtime]')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            arch: arm64
+          - runner: windows-2022
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.22.2'
+          architecture: ${{ matrix.arch }}
+      - name: Candidate and harness contract checks (not runtime acceptance)
+        run: node --test test/windows-runtime/contract.test.mjs
+      - name: Real DSH / official replay as a standard user
+        shell: pwsh
+        run: ./test/windows-runtime/windows.ps1
+      - name: Targeted stage statuses
+        if: always()
+        shell: pwsh
+        run: |
+          $path = 'test/windows-runtime/.local/windows-evidence/result.json'
+          if (Test-Path -LiteralPath $path) {
+            $r = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            "Runtime: $($r.status), $($r.platform)/$($r.arch)" >> $env:GITHUB_STEP_SUMMARY
+            "Candidate SHA256: $($r.candidate.sha256)" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($stage in $r.stages.PSObject.Properties) {
+              "$($stage.Name): $($stage.Value.status)" >> $env:GITHUB_STEP_SUMMARY
+            }
+          } else {
+            'NOT_RUN_OR_SETUP_FAILED: no standard-user result.json; no Windows success claimed.' >> $env:GITHUB_STEP_SUMMARY
+          }
+          'Official signed Desktop: NOT_RUN; separate acceptance remains required.' >> $env:GITHUB_STEP_SUMMARY

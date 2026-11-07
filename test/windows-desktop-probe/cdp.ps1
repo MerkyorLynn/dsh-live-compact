@@ -78,7 +78,7 @@ JSON.stringify({
     }
     if ($PackageAddress) {
         if ($PackageAddress.Scheme -ne 'https' -or $PackageAddress.Host -ne 'raw.githubusercontent.com' -or
-            $PackageAddress.AbsolutePath -ne '/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz') {
+            $PackageAddress.AbsolutePath -ne '/Tranquillitatis-Lab/dsh-live-compact/1b075587f95786b5d072a21a7918e50972825016/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz') {
             throw 'Package address is outside the frozen fixture.'
         }
         $expression = @'

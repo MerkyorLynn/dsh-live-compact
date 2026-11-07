@@ -161,7 +161,7 @@ function Assert-CandidateIdentity {
     $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
     $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
     if ($package.name -ne 'dsh-live-compact' -or $package.version -ne '1.1.2' -or
-        $engineHash -ne '5e6f0536d8fb2d1707d14597dfbd8af6c047e2746a60705889ea531e0b937f96' -or
+        $engineHash -ne '7d09d88f002dc96b6f0f7622f49ddf8affb4c519e79bf8d1076ee306fab71938' -or
         $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
     [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
         ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
@@ -260,7 +260,7 @@ try {
     $view = Get-DesktopView 'plugin-manager-proof.json'
     Invoke-RequiredClick 'Add plugin'
     $view = Get-DesktopView 'plugin-install-proof.json'
-    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
+    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/1b075587f95786b5d072a21a7918e50972825016/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
     if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
     Set-ProbeStage 'Installing frozen candidate through official UI'
     Invoke-RequiredClick 'Install'

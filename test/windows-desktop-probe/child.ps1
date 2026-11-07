@@ -113,8 +113,14 @@ try {
                     if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
                     if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Install')) { throw 'Official Install control was not available.' }
                     $installed = Join-Path $env:DSH_HOME 'profiles\desktop\node_modules\dsh-live-compact'
-                    $installDeadline = [DateTime]::UtcNow.AddSeconds(105)
-                    while (-not (Test-Path -LiteralPath (Join-Path $installed 'index.js')) -and [DateTime]::UtcNow -lt $installDeadline) { Start-Sleep -Seconds 3 }
+                    $installDeadline = [DateTime]::UtcNow.AddSeconds(150)
+                    while (-not (Test-Path -LiteralPath (Join-Path $installed 'index.js')) -and [DateTime]::UtcNow -lt $installDeadline) {
+                        Start-Sleep -Seconds 5
+                        try {
+                            & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
+                                Set-Content -LiteralPath (Join-Path $PSScriptRoot 'install-progress-proof.json')
+                        } catch {}
+                    }
                     $package = Get-Content -LiteralPath (Join-Path $installed 'package.json') -Raw | ConvertFrom-Json
                     $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
                     $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
@@ -125,8 +131,8 @@ try {
                     Start-Sleep -Seconds 4
                     for ($attempt = 0; $attempt -lt 14; $attempt++) {
                         try {
-                            $active = @(Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2 |
-                                Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl }) | Select-Object -First 1
+                            $activeTargets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
+                            $active = $activeTargets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl } | Select-Object -First 1
                             if ($active) {
                                 & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port |
                                     Set-Content -LiteralPath (Join-Path $PSScriptRoot 'post-install-proof.json')

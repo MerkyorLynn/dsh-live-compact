@@ -56,6 +56,23 @@ try {
     Write-Host "CANDIDATE_SHA256 $($pin.sha256)"
     Write-Host "INDEX_SHA256 $(($pin.files | Where-Object path -eq 'index.js').sha256)"
     Write-Host "SHADOW_SHA256 $(($pin.files | Where-Object path -eq 'shadow.js').sha256)"
+    $runtime = Join-Path $run 'runtime'
+    New-Item -ItemType Directory -Path $runtime | Out-Null
+    '{"name":"disposable-dsh112-runtime","private":true,"type":"module"}' | Set-Content -LiteralPath (Join-Path $runtime 'package.json') -Encoding utf8NoBOM
+    $npm = Join-Path (Split-Path $node -Parent) 'node_modules\npm\bin\npm-cli.js'
+    $npmConfig = Join-Path $root 'empty.npmrc'
+    '' | Set-Content -LiteralPath $npmConfig -Encoding utf8NoBOM
+    $setupOut = Join-Path $root 'runtime-setup.stdout.log'
+    $setupErr = Join-Path $root 'runtime-setup.stderr.log'
+    $install = "`"$npm`" install --ignore-scripts --save-exact --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000 --registry=https://registry.npmjs.org/ --userconfig=`"$npmConfig`" --globalconfig=`"$npmConfig`" @deepseek-ai/dsh@0.2.0-rc.2 @deepseek-ai/dsh-llm-replay@0.2.0-rc.2 pnpm@11.7.0"
+    $setup = Start-Process -FilePath $node -ArgumentList $install -WorkingDirectory $runtime -RedirectStandardOutput $setupOut -RedirectStandardError $setupErr -PassThru
+    $setupDeadline = [DateTime]::UtcNow.AddMinutes(6)
+    while (-not $setup.WaitForExit(20000)) {
+        Write-Host "RUNNING PID $($setup.Id); preinstalling pinned official runtime dependencies"
+        if ([DateTime]::UtcNow -gt $setupDeadline) { & "$env:SystemRoot\System32\taskkill.exe" /PID $setup.Id /T /F | Out-Null; throw 'Official runtime setup timed out.' }
+    }
+    Get-Content -LiteralPath $setupOut -Tail 10
+    if ($setup.ExitCode -ne 0) { Get-Content -LiteralPath $setupErr -Tail 20; throw "Official runtime setup exited $($setup.ExitCode)." }
     $stdoutFile = Join-Path $root 'standard-user.stdout.log'
     $stderrFile = Join-Path $root 'standard-user.stderr.log'
     $arguments = @((Join-Path $harness 'run.mjs'), '--root', $run)
@@ -71,7 +88,14 @@ try {
     $resultFile = Join-Path $run 'result.json'
     if (-not (Test-Path -LiteralPath $resultFile)) { throw 'Runtime did not save result.json.' }
     $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
-    if ($child.ExitCode -ne 0 -or $result.status -ne 'PASS') { throw "Runtime probe failed: exit=$($child.ExitCode), status=$($result.status)" }
+    if ($child.ExitCode -ne 0 -or $result.status -ne 'PASS') {
+        $failed = $result.stages.PSObject.Properties | Where-Object { $_.Value.status -eq 'FAIL' } | Select-Object -First 1
+        if ($failed -and $failed.Name -in @('install','plugin-install','fixture','before','denied','new-session','restart')) {
+            $log = Join-Path $run "$($failed.Name).stderr.log"
+            if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 24 }
+        }
+        throw "Runtime probe failed: exit=$($child.ExitCode), status=$($result.status)"
+    }
     foreach ($stage in @('before','denied','new-session','restart')) {
         if ($result.stages.$stage.status -ne 'PASS') { throw "Missing stage PASS: $stage" }
     }

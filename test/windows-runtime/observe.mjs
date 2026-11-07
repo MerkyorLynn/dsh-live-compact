@@ -75,6 +75,7 @@ Engine.prototype.ensurePruneGuard = function (...args) {
 };
 const capture = Engine.prototype.captureOne;
 const observedLoggers = new WeakSet();
+const requestedPrunes = new Set();
 Engine.prototype.captureOne = function (session, event, ...args) {
   const logger = this.ctx?.logger;
   if (logger && typeof logger.warn === 'function' && !observedLoggers.has(logger)) {
@@ -88,7 +89,25 @@ Engine.prototype.captureOne = function (session, event, ...args) {
     };
   }
   const value = capture.call(this, session, event, ...args);
-  log('capture', { sid: session.id, seq: event.seq, callId: event.data.message.toolCallId, ok: value?.ok === true, reason: value?.reason, path: value?.path, sha256: value?.sha256 });
+  const callId = event.data.message.toolCallId;
+  log('capture', { sid: session.id, seq: event.seq, callId, ok: value?.ok === true, reason: value?.reason, path: value?.path, sha256: value?.sha256 });
+  const pruneKey = `${session.id}:${callId}`;
+  if (callId === `${process.env.PROBE_STAGE}-long` && !requestedPrunes.has(pruneKey)) {
+    requestedPrunes.add(pruneKey);
+    // Use the next real pre-step, when the completed tool result has reached
+    // the surface and the turn is still open, like native pressure pruning.
+    const dispose = this.ctx.on('agent/pre-step', async ({ agent }, next) => {
+      if (agent.session === session) {
+        dispose();
+        this.ensurePruneGuard();
+        const pruner = this.ctx.get('toolResultPruner');
+        assert.ok(pruner?.pruneSession?.__spineGuarded, 'expected the production prune guard');
+        log('probe-prune-driver', { sid: session.id });
+        pruner.pruneSession(session);
+      }
+      return next();
+    });
+  }
   return value;
 };
 const recover = Engine.prototype.recoverVisibleRaw;
@@ -117,13 +136,6 @@ Engine.prototype.finishTurn = async function (agent, ...args) {
   }
   log('finishTurn-enter', { sid });
   try {
-    // The disposable scenario disables automatic pressure summarization. Ask
-    // the actual host service explicitly, through the engine's real guard.
-    this.ensurePruneGuard();
-    const pruner = this.ctx.get('toolResultPruner');
-    assert.ok(pruner?.pruneSession?.__spineGuarded, 'expected the production prune guard');
-    log('probe-prune-driver', { sid });
-    pruner.pruneSession(agent.session);
     const value = await finish.call(this, agent, ...args);
     const events = agent.session.snapshotEvents();
     log('finishTurn-return', {

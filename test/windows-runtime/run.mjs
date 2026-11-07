@@ -15,11 +15,15 @@ const root = args.length ? resolve(args[1]) : mkdtempSync(join(realpathSync(tmpd
 assert.ok(['darwin', 'win32'].includes(process.platform), 'only native macOS and Windows are supported');
 if (process.platform === 'darwin') assert.notEqual(process.geteuid(), 0, 'run the macOS probe as a non-root user');
 mkdirSync(root, { recursive: true });
-assert.equal(readdirSync(root).filter((file) => file !== 'denied-shadow' && file !== 'expected-sid.txt').length, 0, 'refuse to reuse a runtime root');
+const preinstalled = process.platform === 'win32' && existsSync(join(root, 'expected-sid.txt')) &&
+  existsSync(join(root, 'runtime', 'package-lock.json'));
+const setupFiles = ['denied-shadow', 'expected-sid.txt', ...(preinstalled ? ['runtime'] : [])];
+assert.equal(readdirSync(root).filter((file) => !setupFiles.includes(file)).length, 0, 'refuse to reuse a runtime root');
 const env = cleanEnv(root);
 const workspace = join(root, 'workspace');
 const runtime = join(root, 'runtime');
-for (const path of [workspace, runtime]) mkdirSync(path);
+mkdirSync(workspace);
+if (!preinstalled) mkdirSync(runtime);
 writeInputs(workspace);
 const results = { platform: process.platform, arch: process.arch, node: process.version, root, windowsAcceptance: 'NOT_RUN', desktopAcceptance: 'NOT_RUN', stages: Object.fromEntries(['candidate', 'install', 'plugin-install', 'fixture', 'before', 'denied', 'new-session', 'restart'].map((name) => [name, { status: 'NOT_RUN' }])) };
 console.log(`EVIDENCE_ROOT ${root}`);
@@ -29,14 +33,17 @@ try {
   results.candidate = pin;
   results.stages.candidate = { status: 'PASS', tarballSha256: pin.sha256 };
   current = 'install';
-  const npm = npmCli();
-  save(join(runtime, 'package.json'), { name: 'disposable-dsh112-runtime', private: true, type: 'module' });
-  await command('install', [npm, 'install', '--ignore-scripts', '--save-exact', '--no-audit', '--no-fund',
-    `@deepseek-ai/dsh@${version}`, `@deepseek-ai/dsh-llm-replay@${version}`, 'pnpm@11.7.0'],
-  { root, cwd: runtime, env, timeout: 240000 });
+  if (!preinstalled) {
+    const npm = npmCli();
+    save(join(runtime, 'package.json'), { name: 'disposable-dsh112-runtime', private: true, type: 'module' });
+    await command('install', [npm, 'install', '--ignore-scripts', '--save-exact', '--no-audit', '--no-fund',
+      `@deepseek-ai/dsh@${version}`, `@deepseek-ai/dsh-llm-replay@${version}`, 'pnpm@11.7.0'],
+    { root, cwd: runtime, env, timeout: 240000 });
+  }
   const dshAnchor = join(runtime, 'node_modules/@deepseek-ai/dsh/package.json');
   const dsh = join(dirname(dshAnchor), json(dshAnchor).bin.dsh);
   assert.equal(json(dshAnchor).version, version);
+  assert.equal(json(join(runtime, 'node_modules/pnpm/package.json')).version, '11.7.0');
   const cliVersion = await command('cli-version', [dsh, '--version'], { root, cwd: workspace, env });
   assert.ok(cliVersion.includes(version), 'actual CLI version');
   results.stages.install = { status: 'PASS', version, entrySha256: sha256(readFileSync(dsh)), lockSha256: sha256(readFileSync(join(runtime, 'package-lock.json'))) };
@@ -93,7 +100,7 @@ try {
     writeFileSync(patch, overlay(replay, fixture, script));
     writeFileSync(events, '');
     const shadow = denied ? deniedShadow : healthyShadow;
-    const stageEnv = { ...env, SPINE_SHADOW_DIR: shadow, PROBE_DENIED: denied ? '1' : '0', PROBE_EVENTS: events, PROBE_INSTALLED: installed, PROBE_PIN: join(here, 'candidate.json'), PROBE_DSH_ANCHOR: dshAnchor, ...(expectedSid ? { PROBE_EXPECTED_SID: expectedSid } : {}) };
+    const stageEnv = { ...env, SPINE_SHADOW_DIR: shadow, PROBE_STAGE: stage, PROBE_DENIED: denied ? '1' : '0', PROBE_EVENTS: events, PROBE_INSTALLED: installed, PROBE_PIN: join(here, 'candidate.json'), PROBE_DSH_ANCHOR: dshAnchor, ...(expectedSid ? { PROBE_EXPECTED_SID: expectedSid } : {}) };
     const resume = stage === 'restart' ? ['--session-id', recoverySid] : [];
     const output = await command(stage, ['--import', pathToFileURL(join(here, 'observe.mjs')).href, dsh, '--profile', 'headless', '--patch', patch, '--json', ...resume, `Synthetic runtime verification ${stage}`], { root, cwd: workspace, env: stageEnv });
     const rows = readFileSync(events, 'utf8').trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));

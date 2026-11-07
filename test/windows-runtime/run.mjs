@@ -134,8 +134,20 @@ try {
     results.stages[stage] = result;
     console.log(`PASS ${stage} sid=${result.sid} finishTurn=${result.finishTurn} maintenance=${result.maintenance} prunes=${result.prunes}`);
   }
+  if (process.platform === 'win32') {
+    current = 'native-rotation';
+    const scope = join(repository, 'node_modules');
+    mkdirSync(scope);
+    symlinkSync(join(runtime, 'node_modules/@deepseek-ai'), join(scope, '@deepseek-ai'), 'junction');
+    const tap = await command(current, ['--test', '--test-name-pattern=^two OS processes with late raw writer',
+      join(repository, 'test/issue-27.mjs')], { root, cwd: workspace, env, timeout: 90000 });
+    const checks = tap.split(/\r?\n/).filter((line) => /^ok \d+ - two OS processes with late raw writer.*finishes at 440/.test(line));
+    assert.equal(checks.length, 2, 'real independent processes on the explicit root and its alias must finish at 440 bytes');
+    results.stages[current] = { status: 'PASS', checks: checks.length, finalBytes: 440 };
+    console.log(`PASS ${current} ${checks.length} independent-process checks at 440 bytes`);
+    results.windowsAcceptance = 'PASS';
+  }
   results.status = 'PASS';
-  if (process.platform === 'win32') results.windowsAcceptance = 'PASS';
 } catch (error) {
   results.status = 'FAIL';
   results.stages[current] = { status: 'FAIL', message: error.message };

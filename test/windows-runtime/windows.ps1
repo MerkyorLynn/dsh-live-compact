@@ -47,6 +47,10 @@ try {
     foreach ($file in @('common.mjs','scenario.mjs','verify.mjs','run.mjs','observe.mjs','network-guard.mjs','fixture.mjs','candidate.json')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $harness }
     New-Item -ItemType Directory -Path (Join-Path $harness 'fixtures') | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "fixtures\$($pin.filename)") -Destination (Join-Path $harness 'fixtures')
+    $nativeFixtures = Join-Path $work 'test\fixtures'
+    New-Item -ItemType Directory -Path $nativeFixtures -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $repo 'test\issue-27.mjs') -Destination (Join-Path $work 'test')
+    Copy-Item -LiteralPath (Join-Path $repo 'test\fixtures\issue-27-worker.mjs') -Destination $nativeFixtures
     $denied = Join-Path $run 'denied-shadow'
     New-Item -ItemType Directory -Path $denied | Out-Null
     Set-TestAcl $denied $user.SID.Value $true
@@ -92,13 +96,13 @@ try {
     $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
     if ($child.ExitCode -ne 0 -or $result.status -ne 'PASS') {
         $failed = $result.stages.PSObject.Properties | Where-Object { $_.Value.status -eq 'FAIL' } | Select-Object -First 1
-        if ($failed -and $failed.Name -in @('install','plugin-install','fixture','before','denied','new-session','restart')) {
+        if ($failed -and $failed.Name -in @('install','plugin-install','fixture','before','denied','new-session','restart','native-rotation')) {
             $log = Join-Path $run "$($failed.Name).stderr.log"
             if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 24 }
         }
         throw "Runtime probe failed: exit=$($child.ExitCode), status=$($result.status)"
     }
-    foreach ($stage in @('before','denied','new-session','restart')) {
+    foreach ($stage in @('before','denied','new-session','restart','native-rotation')) {
         if ($result.stages.$stage.status -ne 'PASS') { throw "Missing stage PASS: $stage" }
     }
 } finally {

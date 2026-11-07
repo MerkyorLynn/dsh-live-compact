@@ -25,10 +25,16 @@ try {
         }
         & "$env:SystemRoot\System32\icacls.exe" $root /grant:r "*$($user.SID.Value):(OI)(CI)M" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Unable to grant probe directory access for $role." }
-        $argsForChild = "probe.mjs $role $root $($user.SID.Value)"
-        $child = Start-Process -FilePath $node -ArgumentList $argsForChild -Credential ([pscredential]::new($account,$password)) -LoadUserProfile -WorkingDirectory $root -PassThru
+        $argsForChild = "--trace-uncaught probe.mjs $role $root $($user.SID.Value)"
+        $stdoutFile = Join-Path $root "$role-stdout.txt"
+        $stderrFile = Join-Path $root "$role-stderr.txt"
+        $child = Start-Process -FilePath $node -ArgumentList $argsForChild -Credential ([pscredential]::new($account,$password)) -LoadUserProfile -WorkingDirectory $root -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -PassThru
         if (-not $child.WaitForExit(120000)) { $child.Kill(); throw "$role timed out." }
-        if ($child.ExitCode -ne 0) { throw "$role exited $($child.ExitCode)." }
+        if (Test-Path -LiteralPath $stdoutFile) { Get-Content -LiteralPath $stdoutFile -TotalCount 16 }
+        if ($child.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $stderrFile) { Get-Content -LiteralPath $stderrFile -TotalCount 45 }
+            throw "$role exited $($child.ExitCode)."
+        }
         Get-Content -LiteralPath (Join-Path $root "$role-proof.json")
     }
     $reader = Get-Content -LiteralPath (Join-Path $root 'reader-proof.json') -Raw | ConvertFrom-Json

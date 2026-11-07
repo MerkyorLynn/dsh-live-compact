@@ -18,14 +18,18 @@ const replaced = join(root, "replaced");
 const replacementPayload = join(replaced, "cut-2-abcdef02.txt");
 const icacls = join(system32, "icacls.exe");
 if (role === "writer") {
+  console.log("ACL_STEP legacy directory");
   mkdirSync(shadow);
   execFileSync(join(system32, "icacls.exe"), [shadow, "/grant:r", "*S-1-1-0:(OI)(CI)RX"]);
   ensureShadowDir(shadow);
+  console.log("ACL_STEP new file inheritance");
   writeShadowFile(payload, "synthetic backup");
   if (readFileSync(payload, "utf8") !== "synthetic backup") throw new Error("Writer could not read its backup");
+  console.log("ACL_STEP legacy file");
   writeFileSync(legacy, "legacy synthetic backup");
   execFileSync(icacls, [legacy, "/grant:r", "*S-1-1-0:R"]);
   tightenShadow(legacy, "file");
+  console.log("ACL_STEP replaced directory");
   ensureShadowDir(replaced);
   renameSync(replaced, join(root, "previous"));
   mkdirSync(replaced);

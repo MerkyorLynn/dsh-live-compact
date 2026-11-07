@@ -62,7 +62,8 @@ try {
     $automation = $false
     if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
         $legacyShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-        & $legacyShell -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia.ps1') -WindowHandle $process.MainWindowHandle.ToInt64() -AppProcess $process.Id
+        $uiaOutput = Join-Path $PSScriptRoot 'uia-diagnostic.txt'
+        & $legacyShell -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia.ps1') -WindowHandle $process.MainWindowHandle.ToInt64() -AppProcess $process.Id *> $uiaOutput
         $automation = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'uia-proof.json'))
     }
     [pscustomobject]@{
@@ -73,6 +74,8 @@ try {
         DesktopExecutableVersion = $version
         Alive = -not $process.HasExited
         NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero
+        NativeWindowTitle = $process.MainWindowTitle
+        SessionId = $process.SessionId
         AutomationPage = [bool]$page
         WindowsAutomation = $automation
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-proof.json')

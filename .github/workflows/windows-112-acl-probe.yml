@@ -1,7 +1,7 @@
-name: Windows shadow ACL baseline probe
+name: Windows shadow ACL fixed-module probe
 on:
   push:
-    branches: [validation/112-windows-acl-probe]
+    branches: [validation/112-windows-acl-fixed]
 permissions:
   contents: read
 jobs:

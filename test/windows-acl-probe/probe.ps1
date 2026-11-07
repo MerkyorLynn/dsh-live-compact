@@ -5,6 +5,7 @@ New-Item -ItemType Directory -Path $root | Out-Null
 $node = (Get-Command node.exe -CommandType Application).Source
 $gitRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Copy-Item -LiteralPath (Join-Path $gitRoot 'shadow.js') -Destination $root
+Write-Host ("SHADOW_MODULE_SHA256 " + (Get-FileHash -LiteralPath (Join-Path $root 'shadow.js') -Algorithm SHA256).Hash)
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'probe.mjs') -Destination $root
 '{"type":"module"}' | Set-Content -LiteralPath (Join-Path $root 'package.json')
 'positive control' | Set-Content -LiteralPath (Join-Path $root 'control.txt')
@@ -31,7 +32,7 @@ try {
         Get-Content -LiteralPath (Join-Path $root "$role-proof.json")
     }
     $reader = Get-Content -LiteralPath (Join-Path $root 'reader-proof.json') -Raw | ConvertFrom-Json
-    if ($reader.readerRead) { throw 'BASELINE_ACL_LEAK: another standard user read the synthetic backup.' }
+    if ($reader.readerRead) { throw 'ACL_LEAK: another standard user read a synthetic backup.' }
 } finally {
     foreach ($name in $accounts) { Remove-LocalUser -Name $name -ErrorAction SilentlyContinue }
 }

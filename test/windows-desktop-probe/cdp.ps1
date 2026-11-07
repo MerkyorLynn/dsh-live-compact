@@ -16,13 +16,22 @@ JSON.stringify({
   documentNodes: document.body?.childElementCount || 0,
   status: (document.body?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 180),
   pluginStatus: (document.body?.innerText || '').split('\n')
-    .filter(text => /live compact|dsh-live-compact|边做边压|install|restart|起切/i.test(text)).slice(0, 25),
+    .filter(text => /live compact|dsh-live-compact|compaction-spine|边做边压|install|restart|起切/i.test(text))
+    .slice(0, 25).map(text => text.trim().slice(0, 180)),
   minTokens: (() => {
     const root = document.getElementById('live-compact-minTokens');
     const field = root?.matches('input') ? root : root?.querySelector('input');
-    return field ? {value: field.value, disabled: field.disabled} : null;
+    if (!field) return null;
+    field.scrollIntoView({block: 'center'});
+    const rect = field.getBoundingClientRect(), style = getComputedStyle(field);
+    const visible = !!field.getClientRects().length && rect.width > 0 && rect.height > 0 &&
+      style.visibility === 'visible' && style.opacity !== '0' &&
+      !field.closest('[hidden], [inert], [aria-hidden="true"]');
+    const hit = visible ? document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) : null;
+    return {value: field.value, visible: visible && (hit === field || field.contains(hit)),
+      disabled: field.matches(':disabled') || field.getAttribute('aria-disabled') === 'true', readOnly: field.readOnly};
   })(),
-  buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], a')]
+  buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="switch"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))
     .filter(Boolean).slice(0, 50),
@@ -35,21 +44,32 @@ JSON.stringify({
         $expression = @'
 (() => {
   if (location.protocol !== 'dsh-app:') return false;
-  const installDialog = document.querySelector('input[aria-label="Package name or address"]')?.closest('[role="dialog"]');
-  const scope = __LABEL__ === 'DismissInstall' ? installDialog : document;
+  const installDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(el => el.getClientRects().length &&
+    (el.querySelector('input[aria-label="Package name or address"]') || /dsh-live-compact/.test(el.innerText || '')));
+  const installDialog = installDialogs.length === 1 ? installDialogs[0] : null;
+  const field = document.getElementById('live-compact-minTokens');
+  const scope = __LABEL__ === 'DismissInstall' ? installDialog : __LABEL__ === 'SaveCandidate'
+    ? field?.closest('form, [role="form"], [data-plugin-row-detail="dsh-live-compact#compaction-spine"]') : document;
   if (!scope) return false;
-  const entry = [...scope.querySelectorAll('button, [role="button"]')].find(el => {
+  const entry = [...scope.querySelectorAll('button, [role="button"], [role="switch"]')].find(el => {
     const label = (el.getAttribute('aria-label') || el.title || el.textContent || '').trim();
     if (!el.getClientRects().length) return false;
     switch (__LABEL__) {
-      case 'CandidateDetails': return /^(?:View|Manage|Configure)\s+.*(?:Live Compact|dsh-live-compact|边做边压)/i.test(label);
-      case 'EnableCandidate': return label === 'Enable now' || label === 'Enable dsh-live-compact';
-      case 'SaveCandidate': return !!document.getElementById('live-compact-minTokens') && (label === 'Save' || label === '保存');
+      case 'CandidateDetails': return /^(?:(?:View|Manage|Configure)\s+|查看\s*|配置\s*)(?:Live Compact|dsh-live-compact|compaction-spine|边做边压)$/i.test(label) ||
+        (el.closest('[data-plugin-row="compaction-spine"]') && /^(?:Configure\s+|配置\s*)/.test(label));
+      case 'EnableCandidate': return (label === 'Enable now' || /^(?:Enable\s+|启用\s*)(?:dsh-live-compact|Live Compact|compaction-spine|边做边压)$/i.test(label)) &&
+        el.getAttribute('aria-checked') !== 'true' && !el.checked;
+      case 'SaveCandidate': return label === 'Save' || label === '保存';
       case 'DismissInstall': return label === 'Close';
       default: return label === __LABEL__;
     }
   });
-  if (!entry || entry.disabled || entry.getAttribute('aria-disabled') === 'true') return false;
+  if (!entry || entry.matches(':disabled') || entry.getAttribute('aria-disabled') === 'true' ||
+      entry.closest('[inert], [aria-hidden="true"]') || getComputedStyle(entry).visibility !== 'visible') return false;
+  entry.scrollIntoView({block: 'center'});
+  const rect = entry.getBoundingClientRect();
+  const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  if (rect.width <= 0 || rect.height <= 0 || !(hit === entry || entry.contains(hit))) return false;
   entry.click();
   return true;
 })()
@@ -65,7 +85,7 @@ JSON.stringify({
 (() => {
   if (location.protocol !== 'dsh-app:') return false;
   const input = document.querySelector('input[aria-label="Package name or address"]');
-  if (!input || !input.getClientRects().length) return false;
+  if (!input || input.matches(':disabled') || input.readOnly || !input.getClientRects().length) return false;
   input.focus();
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, __ADDRESS__);
   input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -80,10 +100,18 @@ JSON.stringify({
   if (location.protocol !== 'dsh-app:') return false;
   const root = document.getElementById('live-compact-minTokens');
   const input = root?.matches('input') ? root : root?.querySelector('input');
-  if (!input || input.disabled || !input.getClientRects().length) return false;
+  if (!input || input.matches(':disabled') || input.readOnly || input.getAttribute('aria-disabled') === 'true' ||
+      input.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+  input.scrollIntoView({block: 'center'});
+  const rect = input.getBoundingClientRect();
+  if (!input.getClientRects().length || rect.width <= 0 || rect.height <= 0 ||
+      getComputedStyle(input).visibility !== 'visible' ||
+      document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) !== input) return false;
   input.focus();
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, __VALUE__);
   input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  input.blur();
   return input.value === __VALUE__;
 })()
 '@
@@ -106,6 +134,7 @@ JSON.stringify({
             $response = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
         } finally { $message.Dispose() }
     } until ($response.id -eq 1)
+    if ($response.error -or $response.result.exceptionDetails) { throw 'CDP evaluation failed.' }
     if ($null -eq $response.result.result.value) { throw 'CDP returned no page evidence.' }
     $response.result.result.value
 } finally {

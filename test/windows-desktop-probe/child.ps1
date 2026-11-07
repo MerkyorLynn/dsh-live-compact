@@ -1,6 +1,171 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $process = $null
+$exitCode = 1
+$stage = 'Standard account preflight'
+$ownedProcesses = [Collections.Generic.List[Diagnostics.Process]]::new()
+$proof = [ordered]@{
+    Complete = $false
+    StandardUser = $false
+    CandidateInstalled = $false
+    EditableMinTokens = $false
+    OfficialSaveClicked = $false
+    PersistedInProfile = $false
+    RestartReadback = $false
+    Profile = 'desktop'
+    Namespace = 'compaction-spine'
+}
+function Set-ProbeStage([string]$Name) {
+    $script:stage = $Name
+    $Name | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-stage.txt')
+    Write-Host "Desktop probe: $Name"
+}
+function Update-OwnedProcesses {
+    # Follow only descendants of process objects we launched, retaining their
+    # handles/start times so PID reuse cannot turn cleanup into an image-name kill.
+    for ($i = 0; $i -lt $ownedProcesses.Count; $i++) {
+        $parent = $ownedProcesses[$i]
+        if ($parent.HasExited) { continue }
+        foreach ($info in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parent.Id)")) {
+            if (@($ownedProcesses | Where-Object Id -eq $info.ProcessId).Count) { continue }
+            try {
+                $descendant = [Diagnostics.Process]::GetProcessById([int]$info.ProcessId)
+                if ($descendant.StartTime -ge $parent.StartTime) {
+                    $null = $descendant.Handle
+                    $ownedProcesses.Add($descendant)
+                }
+            } catch [ArgumentException] {
+                # A child may exit between enumeration and lookup.
+            } catch [InvalidOperationException] {
+            } catch [ComponentModel.Win32Exception] {}
+        }
+    }
+}
+function Stop-OwnedProcesses {
+    try { Update-OwnedProcesses } catch { Write-Host 'Desktop probe: descendant snapshot unavailable; cleaning known owned processes.' }
+    $failed = [Collections.Generic.List[int]]::new()
+    foreach ($owned in $ownedProcesses) {
+        try {
+            if (-not $owned.HasExited) {
+                $owned.Kill($true)
+                if (-not $owned.WaitForExit(10000)) { $failed.Add($owned.Id) }
+            }
+        } catch {
+            if (-not $owned.HasExited) { $failed.Add($owned.Id) }
+        }
+    }
+    if ($failed.Count) { throw "Owned processes did not stop: $($failed -join ', ')." }
+}
+function Start-Desktop {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
+    try {
+        $listener.Start()
+        $script:port = $listener.LocalEndpoint.Port
+    } finally { $listener.Stop() }
+    $script:process = Start-Process -FilePath $app.FullName -WorkingDirectory $app.DirectoryName -ArgumentList @(
+        "--user-data-dir=`"$appProfile`"", "--remote-debugging-port=$port",
+        '--remote-debugging-address=127.0.0.1', '--force-renderer-accessibility'
+    ) -PassThru
+    $ownedProcesses.Add($process)
+    Write-Host "Desktop probe: launched owned PID $($process.Id)."
+}
+function Get-DesktopView([string]$Evidence, [int]$TimeoutSeconds = 75) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $process.Refresh()
+        if ($process.HasExited) { throw 'The owned official Desktop process exited.' }
+        Update-OwnedProcesses
+        try {
+            $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
+            $target = $targets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl } | Select-Object -First 1
+            if ($target) {
+                $raw = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port
+                $raw | Set-Content -LiteralPath (Join-Path $PSScriptRoot $Evidence)
+                $state = $raw | ConvertFrom-Json
+                if ($state.protocol -eq 'dsh-app:' -and $state.ready -eq 'complete' -and $state.buttons -contains 'Plugins') {
+                    return [pscustomobject]@{ Endpoint = $target.webSocketDebuggerUrl; State = $state }
+                }
+            }
+        } catch {
+            # Only renderer discovery/readiness is retried. No save/install failure
+            # is swallowed here, and no raw profile content is put in diagnostics.
+            [pscustomobject]@{ Stage = $stage; ReadError = $_.Exception.GetType().Name } |
+                ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-read-diagnostic.json')
+        }
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Official Desktop renderer did not become readable before the deadline.'
+}
+function Invoke-RequiredClick([string]$Label) {
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $view = Get-DesktopView 'last-ui-proof.json' 10
+        if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click $Label) { return }
+        Start-Sleep -Seconds 1
+    }
+    throw "Official UI control was unavailable: $Label."
+}
+function Open-CandidateSettings([string]$Evidence, [bool]$AllowEnable) {
+    # Always navigate again, including in the fresh renderer after restart.
+    $deadline = [DateTime]::UtcNow.AddSeconds(75)
+    $attempt = 0
+    $openedPlugins = $false
+    do {
+        $view = Get-DesktopView $Evidence 10
+        $field = $view.State.minTokens
+        if ($openedPlugins -and $field -and $field.visible -eq $true -and $field.disabled -eq $false -and $field.readOnly -eq $false) {
+            return $view
+        }
+        if ($AllowEnable -and (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click 'EnableCandidate')) {
+            Start-Sleep -Seconds 3
+        } elseif (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click 'DismissInstall') {
+            Start-Sleep -Seconds 1
+        } elseif (-not $openedPlugins) {
+            $openedPlugins = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click 'Plugins'
+        } else {
+            & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click 'CandidateDetails' | Out-Null
+        }
+        if ($openedPlugins -and $attempt -eq 2) {
+            & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -Click 'Refresh' | Out-Null
+        }
+        $attempt++
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Candidate minTokens was not visible and editable in the official settings UI.'
+}
+function Test-CandidateProfileValue {
+    if (-not (Test-Path -LiteralPath $profilePatch -PathType Leaf)) { return $false }
+    if ((Get-Item -LiteralPath $profilePatch).Length -gt 262144) { throw 'Profile patch exceeds the bounded validation size.' }
+    $text = [IO.File]::ReadAllText($profilePatch)
+    # The pinned host serializes block-style profile patches. Fail closed for
+    # unsupported structure rather than finding a value in another row/config.
+    if ($text.Contains("`t") -or $text -match '(?m)^-(?! (?:id|insert):[ \r\n])') { return $false }
+    $rows = @([regex]::Matches($text, '(?m)^- id: (?:compaction-spine|''compaction-spine''|"compaction-spine")[ ]*(?:#.*)?\r?$'))
+    if ($rows.Count -ne 1) { return $false }
+    $row = $text.Substring($rows[0].Index + $rows[0].Length)
+    $end = [regex]::Match($row, '(?m)^- ')
+    if ($end.Success) { $row = $row.Substring(0, $end.Index) }
+    if ($row -match '(?m)^  id:' -or @([regex]::Matches($row, '(?m)^  config:')).Count -ne 1) { return $false }
+    $config = [regex]::Match($row, '(?m)^  config:[ ]*(?:#.*)?\r?$')
+    if (-not $config.Success) { return $false }
+    $body = $row.Substring($config.Index + $config.Length)
+    $end = [regex]::Match($body, '(?m)^  [^ #\r\n]')
+    if ($end.Success) { $body = $body.Substring(0, $end.Index) }
+    $values = @([regex]::Matches($body, '(?m)^    minTokens:[^\r\n]*'))
+    return $values.Count -eq 1 -and $values[0].Value -match '^    minTokens: 24000[ ]*(?:#.*)?$'
+}
+function Assert-CandidateIdentity {
+    foreach ($file in @('package.json','index.js','shadow.js')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $installed $file) -PathType Leaf)) { throw 'Candidate installation is missing required files in the desktop profile.' }
+    }
+    $package = Get-Content -LiteralPath (Join-Path $installed 'package.json') -Raw | ConvertFrom-Json
+    $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
+    $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
+    if ($package.name -ne 'dsh-live-compact' -or $package.version -ne '1.1.2' -or
+        $engineHash -ne '5e6f0536d8fb2d1707d14597dfbd8af6c047e2746a60705889ea531e0b937f96' -or
+        $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
+    [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
+        ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
+}
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -31,7 +196,9 @@ try {
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne '830947F8996DC05D991CA9133FFF4D3400073E47B9CFA6507754867E79482B23') {
         throw 'Installer hash mismatch before execution.'
     }
+    Set-ProbeStage 'Installing pinned signed Desktop'
     $install = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru
+    $ownedProcesses.Add($install)
     if (-not $install.WaitForExit(180000)) {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $install.Id /T /F 2>$null | Out-Null
         throw 'Desktop installation timed out.'
@@ -72,135 +239,125 @@ try {
         HasAppAsar = Test-Path -LiteralPath (Join-Path $app.DirectoryName 'resources\app.asar')
     }
     $folders | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-env-proof.json')
-    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
-    $listener.Start()
-    $port = $listener.LocalEndpoint.Port
-    $listener.Stop()
+    $proof.StandardUser = $true
+    $proof.InstallerExitCode = $installCode
+    $proof.LaunchMode = $launchMode
+    $proof.SignedInstallerVersion = '0.2.2-rc.1'
+    $proof.DesktopExecutableVersion = $version
     $appProfile = Join-Path $local 'DSH Release Validation'
+    $desktopHome = $env:DSH_HOME
+    $installed = Join-Path $desktopHome 'profiles\desktop\node_modules\dsh-live-compact'
+    $profilePatch = Join-Path $desktopHome 'profiles\desktop\cordis.patch.yml'
     New-Item -ItemType Directory -Path $appProfile -Force | Out-Null
-    $process = Start-Process -FilePath $app.FullName -WorkingDirectory $app.DirectoryName -ArgumentList @("--user-data-dir=`"$appProfile`"","--remote-debugging-port=$port","--remote-debugging-address=127.0.0.1","--force-renderer-accessibility") -PassThru
-    $deadline = [DateTime]::UtcNow.AddSeconds(75)
-    $page = $null
-    do {
-        Start-Sleep -Seconds 2
-        if ($process.HasExited) { break }
-        try {
-            $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
-            $page = @($targets | Where-Object { $_.type -eq 'page' -and $_.webSocketDebuggerUrl -and $_.title }) | Select-Object -First 1
-        } catch {}
-    } until ($page -or [DateTime]::UtcNow -gt $deadline)
-    if ($page) {
-        $renderer = $null
-        for ($attempt = 0; $attempt -lt 10; $attempt++) {
-            $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
-            $renderer = @($targets | Where-Object { $_.type -eq 'page' -and $_.webSocketDebuggerUrl } | Select-Object -First 5 | ForEach-Object {
-                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $_.webSocketDebuggerUrl -Port $port | ConvertFrom-Json
-            })
-            if (@($renderer | Where-Object { $_.protocol -eq 'dsh-app:' -and $_.buttons -contains 'Plugins' }).Count -gt 0) { break }
-            Start-Sleep -Seconds 4
-        }
-        ConvertTo-Json -InputObject $renderer -Compress -Depth 5 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
-        foreach ($target in @($targets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl })) {
-            if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Plugins') {
-                Start-Sleep -Seconds 3
-                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
-                    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-manager-proof.json')
-                if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Add plugin') {
-                    Start-Sleep -Seconds 2
-                    & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
-                        Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-install-proof.json')
-                    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
-                    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
-                    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Install')) { throw 'Official Install control was not available.' }
-                    $installed = Join-Path $env:DSH_HOME 'profiles\desktop\node_modules\dsh-live-compact'
-                    $installDeadline = [DateTime]::UtcNow.AddSeconds(150)
-                    while (-not (Test-Path -LiteralPath (Join-Path $installed 'index.js')) -and [DateTime]::UtcNow -lt $installDeadline) {
-                        Start-Sleep -Seconds 5
-                        try {
-                            & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
-                                Set-Content -LiteralPath (Join-Path $PSScriptRoot 'install-progress-proof.json')
-                        } catch {}
-                    }
-                    $package = Get-Content -LiteralPath (Join-Path $installed 'package.json') -Raw | ConvertFrom-Json
-                    $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
-                    $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
-                    if ($package.version -ne '1.1.2' -or $engineHash -ne '5e6f0536d8fb2d1707d14597dfbd8af6c047e2746a60705889ea531e0b937f96' -or
-                        $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
-                    [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
-                        ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
-                    Start-Sleep -Seconds 4
-                    $enabled = $false
-                    for ($attempt = 0; $attempt -lt 14; $attempt++) {
-                        try {
-                            $activeTargets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
-                            $active = $activeTargets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl } | Select-Object -First 1
-                            if ($active) {
-                                $view = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port
-                                $view | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'post-install-proof.json')
-                                $state = $view | ConvertFrom-Json
-                                if (-not $enabled -and ($state.buttons -contains 'Enable now' -or $state.buttons -contains 'Enable dsh-live-compact')) {
-                                    $enabled = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'EnableCandidate'
-                                    if ($enabled) { Start-Sleep -Seconds 4; continue }
-                                }
-                                if ($state.minTokens -and -not $state.minTokens.disabled) {
-                                    $changed = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -SettingValue '24000'
-                                    $saved = $changed -and (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'SaveCandidate')
-                                    $profilePatch = Join-Path $env:DSH_HOME 'profiles\desktop\cordis.patch.yml'
-                                    for ($persist = 0; $saved -and $persist -lt 12; $persist++) {
-                                        if ((Test-Path -LiteralPath $profilePatch) -and (Select-String -LiteralPath $profilePatch -Pattern '^\s*minTokens:\s*24000\s*$' -Quiet)) {
-                                            [pscustomobject]@{ SettingsField = 'minTokens'; SavedValue = 24000; PersistedInProfile = $true } |
-                                                ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'settings-save-proof.json')
-                                            break
-                                        }
-                                        Start-Sleep -Seconds 1
-                                    }
-                                    break
-                                }
-                                if ($attempt -eq 2) {
-                                    & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'DismissInstall' | Out-Null
-                                    & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'Refresh' | Out-Null
-                                }
-                            }
-                            if ($active -and (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'CandidateDetails')) {
-                                Start-Sleep -Seconds 2
-                                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port |
-                                    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'candidate-details-proof.json')
-                            }
-                        } catch {}
-                        Start-Sleep -Seconds 3
-                    }
-                }
-                break
+    Set-ProbeStage 'Opening official Desktop plugin manager'
+    Start-Desktop
+    $initialProcess = $process
+    $initialPid = $process.Id
+    $initialStart = $process.StartTime
+    $initialAppProfile = $appProfile
+    $view = Get-DesktopView 'cdp-proof.json'
+    Invoke-RequiredClick 'Plugins'
+    $view = Get-DesktopView 'plugin-manager-proof.json'
+    Invoke-RequiredClick 'Add plugin'
+    $view = Get-DesktopView 'plugin-install-proof.json'
+    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
+    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
+    Set-ProbeStage 'Installing frozen candidate through official UI'
+    Invoke-RequiredClick 'Install'
+    $installDeadline = [DateTime]::UtcNow.AddSeconds(150)
+    while (-not (Test-Path -LiteralPath (Join-Path $installed 'index.js')) -and [DateTime]::UtcNow -lt $installDeadline) {
+        Start-Sleep -Seconds 5
+        $view = Get-DesktopView 'install-progress-proof.json' 10
+    }
+    Assert-CandidateIdentity
+    $proof.CandidateInstalled = $true
+
+    Set-ProbeStage 'Opening candidate settings and saving minTokens 24000'
+    $view = Open-CandidateSettings 'candidate-details-proof.json' $true
+    $proof.EditableMinTokens = $true
+    if ($view.State.minTokens.value -eq '24000' -or (Test-CandidateProfileValue)) { throw 'Disposable profile already contains the target value; cannot prove a new UI save.' }
+    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -SettingValue '24000')) { throw 'Cannot edit candidate minTokens.' }
+    $view = Get-DesktopView 'settings-edited-proof.json' 10
+    if ($view.State.minTokens.value -ne '24000' -or -not $view.State.minTokens.visible -or
+        $view.State.minTokens.disabled -or $view.State.minTokens.readOnly) { throw 'Candidate minTokens edit was not reflected in the visible editable field.' }
+    Invoke-RequiredClick 'SaveCandidate'
+    $proof.OfficialSaveClicked = $true
+    $persistDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-CandidateProfileValue) -and [DateTime]::UtcNow -lt $persistDeadline) { Start-Sleep -Seconds 1 }
+    if (-not (Test-CandidateProfileValue)) { throw 'Official Save did not persist desktop/compaction-spine.config.minTokens = 24000.' }
+    $proof.PersistedInProfile = $true
+    [pscustomobject]@{
+        SettingsField = 'minTokens'; SavedValue = 24000; OfficialSaveClicked = $true
+        PersistedInProfile = $true; Profile = 'desktop'; Namespace = 'compaction-spine'
+        RelativePatch = 'profiles/desktop/cordis.patch.yml'
+        PatchSHA256 = (Get-FileHash -LiteralPath $profilePatch -Algorithm SHA256).Hash
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'settings-save-proof.json')
+
+    Set-ProbeStage 'Stopping owned Desktop processes for same-profile restart'
+    $oldPort = $port
+    Stop-OwnedProcesses
+    $oldEndpointAlive = $false
+    try {
+        $null = Invoke-RestMethod -Uri "http://127.0.0.1:$oldPort/json/list" -TimeoutSec 2
+        $oldEndpointAlive = $true
+    } catch {}
+    if ($oldEndpointAlive) { throw 'Old Desktop CDP endpoint survived process shutdown.' }
+    if ($env:DSH_HOME -ne $desktopHome -or $env:USERPROFILE -ne $profile -or $appProfile -ne $initialAppProfile) { throw 'Disposable Desktop profile changed before restart.' }
+    Set-ProbeStage 'Restarting official Desktop and reopening candidate settings'
+    Start-Desktop
+    if ($process.Id -eq $initialPid -or $process.StartTime -le $initialStart -or $process.Path -ne $app.FullName) {
+        throw 'Official Desktop did not start as a fresh owned process.'
+    }
+    $view = Get-DesktopView 'restart-cdp-proof.json'
+    # Read-only verification: no enable, setting edits, or Save after restart.
+    $view = Open-CandidateSettings 'restart-settings-ui-proof.json' $false
+    if ($view.State.minTokens.value -ne '24000') { throw 'Restarted official Desktop did not read back minTokens 24000 from the same profile.' }
+    if (-not (Test-CandidateProfileValue)) { throw 'Candidate namespace value was lost from the desktop profile after restart.' }
+    Assert-CandidateIdentity
+    $process.Refresh()
+    if ($process.HasExited -or $process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Restarted official Desktop has no live native window.' }
+    $proof.RestartReadback = $true
+    [pscustomobject]@{
+        Restarted = $true; OldProcessExited = $initialProcess.HasExited; OldEndpointClosed = -not $oldEndpointAlive
+        InitialPID = $initialPid; RestartPID = $process.Id; SameUserDataDirectory = $appProfile -eq $initialAppProfile
+        SameDshHome = $env:DSH_HOME -eq $desktopHome; Profile = 'desktop'; Namespace = 'compaction-spine'
+        ReopenedSettings = $true; Visible = $view.State.minTokens.visible
+        Editable = -not $view.State.minTokens.disabled -and -not $view.State.minTokens.readOnly
+        ReadbackValue = [int]$view.State.minTokens.value
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'settings-restart-proof.json')
+    $proof.Complete = $proof.CandidateInstalled -and $proof.EditableMinTokens -and $proof.OfficialSaveClicked -and $proof.PersistedInProfile -and $proof.RestartReadback
+    if (-not $proof.Complete) { throw 'Desktop candidate validation has incomplete required gates.' }
+    Set-ProbeStage 'All candidate install, UI save, persistence, and restart gates passed'
+    $exitCode = 0
+} catch {
+    $message = $_.Exception.Message
+    "Stage: $stage`n$($message.Substring(0, [Math]::Min($message.Length, 1600)))" | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-failure.txt')
+} finally {
+    # UIA is bounded supplemental evidence; it can never satisfy the candidate gates.
+    try {
+        if ($process -and -not $process.HasExited) {
+            $process.Refresh()
+            $proof.Alive = -not $process.HasExited
+            $proof.NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero
+            $proof.SessionId = $process.SessionId
+            if ($proof.NativeWindow) {
+                $legacyShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                $uia = Start-Process -FilePath $legacyShell -ArgumentList @(
+                    '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass',
+                    '-File', "`"$(Join-Path $PSScriptRoot 'uia.ps1')`"",
+                    '-WindowHandle', $process.MainWindowHandle.ToInt64(), '-AppProcess', $process.Id
+                ) -RedirectStandardOutput (Join-Path $PSScriptRoot 'uia-diagnostic.txt') -RedirectStandardError (Join-Path $PSScriptRoot 'uia-error.txt') -PassThru
+                $ownedProcesses.Add($uia)
+                if (-not $uia.WaitForExit(15000)) { Write-Host "Desktop probe: UIA diagnostic PID $($uia.Id) timed out; cleaning up." }
             }
         }
+    } catch { Write-Host 'Desktop probe: supplemental UIA diagnostic unavailable.' }
+    try { Stop-OwnedProcesses } catch {
+        $exitCode = 1
+        $proof.Complete = $false
+        'Owned-process cleanup failed.' | Add-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-failure.txt')
     }
-    $process.Refresh()
-    $automation = $false
-    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
-        $legacyShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-        $uiaOutput = Join-Path $PSScriptRoot 'uia-diagnostic.txt'
-        & $legacyShell -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia.ps1') -WindowHandle $process.MainWindowHandle.ToInt64() -AppProcess $process.Id *> $uiaOutput
-        $automation = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'uia-proof.json'))
-    }
-    [pscustomobject]@{
-        StandardUser = $true
-        InstallerExitCode = $installCode
-        LaunchMode = $launchMode
-        SignedInstallerVersion = '0.2.2-rc.1'
-        DesktopExecutableVersion = $version
-        Alive = -not $process.HasExited
-        NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero
-        NativeWindowTitle = $process.MainWindowTitle
-        SessionId = $process.SessionId
-        AutomationPage = [bool]$page
-        WindowsAutomation = $automation
-    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-proof.json')
-    if (-not $page -and -not $automation) { throw 'DESKTOP_AUTOMATION_BLOCKED: neither CDP nor native UI Automation could read the official window.' }
-} catch {
-    $_.Exception.Message | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-failure.txt')
-    exit 1
-} finally {
-    if ($process -and -not $process.HasExited) {
-        & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>$null | Out-Null
-    }
+    $proof.Stage = $stage
+    $proof | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-proof.json')
 }
+exit $exitCode

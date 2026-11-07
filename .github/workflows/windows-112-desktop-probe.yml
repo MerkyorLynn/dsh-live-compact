@@ -1,0 +1,21 @@
+name: Official Windows DSH Desktop launch probe
+on:
+  push:
+    branches: [validation/112-windows-desktop-probe]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Launch pinned official Desktop as a standard user
+        shell: pwsh
+        run: ./test/windows-desktop-probe/probe.ps1

@@ -105,8 +105,9 @@ try {
     assert.ok(projected.filter((event) => event.type === 'tool_result').length >= 2, 'real CLI tool-result projection (may include prune replacements)');
     if (denied) {
       assert.ok(rows.some((row) => row.kind === 'filesystem-denial' && ['EACCES', 'EPERM'].includes(row.code)), 'real OS write denial');
-      const warning = readFileSync(join(root, `${stage}.stderr.log`), 'utf8');
-      assert.ok(/spine: shadow permission failed/.test(warning), 'product permission warning');
+      const warnings = rows.filter((row) => row.kind === 'shadow-warning').map((row) => row.message);
+      assert.equal(warnings.length, 1, 'product reports the permission failure once');
+      const [warning] = warnings;
       if (process.platform === 'win32') assert.match(warning, /spine: shadow permission failed ESHADOWACCESS dir exit 1/, 'real native directory ACL helper denied after healthy baseline');
       assert.deepEqual(readdirSync(deniedShadow), [], 'no denied plaintext or cursor artifacts');
     } else {

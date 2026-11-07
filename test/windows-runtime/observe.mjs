@@ -74,7 +74,19 @@ Engine.prototype.ensurePruneGuard = function (...args) {
   return value;
 };
 const capture = Engine.prototype.captureOne;
+const observedLoggers = new WeakSet();
 Engine.prototype.captureOne = function (session, event, ...args) {
+  const logger = this.ctx?.logger;
+  if (logger && typeof logger.warn === 'function' && !observedLoggers.has(logger)) {
+    observedLoggers.add(logger);
+    const originalWarn = logger.warn;
+    logger.warn = function (message, ...values) {
+      if (typeof message === 'string' && message.startsWith('spine: shadow permission failed')) {
+        log('shadow-warning', { message });
+      }
+      return originalWarn.call(this, message, ...values);
+    };
+  }
   const value = capture.call(this, session, event, ...args);
   log('capture', { sid: session.id, seq: event.seq, callId: event.data.message.toolCallId, ok: value?.ok === true, reason: value?.reason, path: value?.path, sha256: value?.sha256 });
   return value;
@@ -105,6 +117,13 @@ Engine.prototype.finishTurn = async function (agent, ...args) {
   }
   log('finishTurn-enter', { sid });
   try {
+    // The disposable scenario disables automatic pressure summarization. Ask
+    // the actual host service explicitly, through the engine's real guard.
+    this.ensurePruneGuard();
+    const pruner = this.ctx.get('toolResultPruner');
+    assert.ok(pruner?.pruneSession?.__spineGuarded, 'expected the production prune guard');
+    log('probe-prune-driver', { sid });
+    pruner.pruneSession(agent.session);
     const value = await finish.call(this, agent, ...args);
     const events = agent.session.snapshotEvents();
     log('finishTurn-return', {

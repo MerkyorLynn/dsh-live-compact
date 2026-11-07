@@ -15,10 +15,31 @@ try {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $install.Id /T /F 2>$null | Out-Null
         throw 'Desktop installation timed out.'
     }
-    if ($install.ExitCode -ne 0) { throw "Desktop installer exited $($install.ExitCode)." }
-    $programs = Join-Path $env:LOCALAPPDATA 'Programs'
-    $app = Get-ChildItem -LiteralPath $programs -Filter 'DeepSeek Harness.exe' -Recurse -File | Select-Object -First 1
-    if (-not $app) { throw 'Per-user Desktop executable was not found.' }
+    $installCode = $install.ExitCode
+    $launchMode = 'installed'
+    if ($installCode -eq 0) {
+        $programs = Join-Path $env:LOCALAPPDATA 'Programs'
+        $app = Get-ChildItem -LiteralPath $programs -Filter 'DeepSeek Harness.exe' -Recurse -File | Select-Object -First 1
+    } else {
+        $launchMode = 'signed-installer-payload'
+        $sevenZip = (Get-Command 7z.exe -CommandType Application -ErrorAction SilentlyContinue).Source
+        if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+        if (-not (Test-Path -LiteralPath $sevenZip)) { throw "Installer exited $installCode and 7-Zip was unavailable." }
+        $extract = Join-Path $PSScriptRoot 'installer-payload'
+        & $sevenZip x $installer "-o$extract" -y | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to extract the verified installer payload.' }
+        $archive = Get-ChildItem -LiteralPath $extract -Filter 'app-64.7z' -Recurse -File | Select-Object -First 1
+        if ($archive) {
+            $unpack = Join-Path $PSScriptRoot 'app-payload'
+            & $sevenZip x $archive.FullName "-o$unpack" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to extract the embedded x64 app.' }
+        } else {
+            $unpack = $extract
+        }
+        $app = Get-ChildItem -LiteralPath $unpack -Filter 'DeepSeek Harness.exe' -Recurse -File | Select-Object -First 1
+    }
+    if (-not $app) { throw "Desktop executable was not found in mode $launchMode." }
+    if ((Get-AuthenticodeSignature -FilePath $app.FullName).Status -ne 'Valid') { throw 'Desktop executable signature did not validate.' }
     $version = $app.VersionInfo.ProductVersion
     if ($version -notmatch '^0\.2\.2-rc\.1(?:$|\s)') { throw "Unexpected installed version $version." }
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
@@ -39,6 +60,8 @@ try {
     $process.Refresh()
     [pscustomobject]@{
         StandardUser = $true
+        InstallerExitCode = $installCode
+        LaunchMode = $launchMode
         DesktopVersion = $version
         Alive = -not $process.HasExited
         NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero

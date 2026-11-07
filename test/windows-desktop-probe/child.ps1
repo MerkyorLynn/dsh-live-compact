@@ -6,6 +6,20 @@ try {
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if ($identity.User.Value -ne (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'expected-sid.txt')).Trim() -or
         $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Expected the standard test account.' }
+    $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::Create)
+    $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::Create)
+    if (-not $profile -or -not $roaming -or -not $local) { throw 'Standard account Windows known folders were not initialized.' }
+    $prefix = $profile.TrimEnd('\') + '\'
+    if (-not $roaming.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $local.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Windows application directories are outside the standard account profile.' }
+    $env:USERPROFILE = $profile
+    $env:HOME = $profile
+    $env:APPDATA = $roaming
+    $env:LOCALAPPDATA = $local
+    $env:TEMP = Join-Path $local 'Temp'
+    $env:TMP = $env:TEMP
+    New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
     $installer = Join-Path $PSScriptRoot 'dsh-0.2.2-rc.1.exe'
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne '830947F8996DC05D991CA9133FFF4D3400073E47B9CFA6507754867E79482B23') {
         throw 'Installer hash mismatch before execution.'
@@ -55,7 +69,9 @@ try {
     $listener.Start()
     $port = $listener.LocalEndpoint.Port
     $listener.Stop()
-    $process = Start-Process -FilePath $app.FullName -ArgumentList @("--remote-debugging-port=$port","--remote-debugging-address=127.0.0.1","--force-renderer-accessibility") -PassThru
+    $appProfile = Join-Path $local 'DSH Release Validation'
+    New-Item -ItemType Directory -Path $appProfile -Force | Out-Null
+    $process = Start-Process -FilePath $app.FullName -WorkingDirectory $app.DirectoryName -ArgumentList @("--user-data-dir=`"$appProfile`"","--remote-debugging-port=$port","--remote-debugging-address=127.0.0.1","--force-renderer-accessibility") -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(75)
     $page = $null
     do {

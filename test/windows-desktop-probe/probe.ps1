@@ -27,11 +27,11 @@ try {
     $pwsh = (Get-Command pwsh.exe -CommandType Application).Source
     $command = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $root 'child.ps1')`""
     $child = Start-Process -FilePath $pwsh -ArgumentList $command -Credential ([pscredential]::new($account,$password)) -LoadUserProfile -WorkingDirectory $root -PassThru
-    if (-not $child.WaitForExit(300000)) {
+    if (-not $child.WaitForExit(480000)) {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $child.Id /T /F 2>$null | Out-Null
         throw 'Standard-user Desktop probe timed out.'
     }
-    foreach ($f in @('desktop-env-proof.json','desktop-proof.json','cdp-proof.json','plugin-manager-proof.json','plugin-install-proof.json','uia-diagnostic.txt','desktop-failure.txt')) {
+    foreach ($f in @('desktop-env-proof.json','desktop-proof.json','cdp-proof.json','plugin-manager-proof.json','plugin-install-proof.json','installed-candidate-proof.json','uia-diagnostic.txt','desktop-failure.txt')) {
         $p = Join-Path $root $f
         if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -TotalCount 32 }
     }

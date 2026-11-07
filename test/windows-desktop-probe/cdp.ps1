@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin')][string]$Click)
+param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin','Install')][string]$Click, [uri]$PackageAddress)
 $ErrorActionPreference = 'Stop'
 if ($Endpoint.Scheme -ne 'ws' -or $Endpoint.Host -ne '127.0.0.1' -or $Endpoint.Port -ne $Port) {
     throw 'CDP must stay on the test application loopback port.'
@@ -18,7 +18,7 @@ JSON.stringify({
   buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))
-    .filter(Boolean).slice(0, 35),
+    .filter(Boolean).slice(0, 50),
   inputs: [...document.querySelectorAll('input')].filter(el => el.getClientRects().length)
     .map(el => ({type: el.type, label: el.getAttribute('aria-label'), placeholder: el.placeholder})).slice(0, 15)
 })
@@ -29,12 +29,30 @@ JSON.stringify({
   if (location.protocol !== 'dsh-app:') return false;
   const entry = [...document.querySelectorAll('button, [role="button"]')].find(el =>
     el.getClientRects().length && (el.getAttribute('aria-label') || el.title || el.textContent || '').trim() === __LABEL__);
-  if (!entry) return false;
+  if (!entry || entry.disabled || entry.getAttribute('aria-disabled') === 'true') return false;
   entry.click();
   return true;
 })()
 '@
         $expression = $expression.Replace('__LABEL__', (ConvertTo-Json -InputObject $Click -Compress))
+    }
+    if ($PackageAddress) {
+        if ($PackageAddress.Scheme -ne 'https' -or $PackageAddress.Host -ne 'raw.githubusercontent.com' -or
+            $PackageAddress.AbsolutePath -ne '/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz') {
+            throw 'Package address is outside the frozen fixture.'
+        }
+        $expression = @'
+(() => {
+  if (location.protocol !== 'dsh-app:') return false;
+  const input = document.querySelector('input[aria-label="Package name or address"]');
+  if (!input || !input.getClientRects().length) return false;
+  input.focus();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, __ADDRESS__);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return input.value === __ADDRESS__;
+})()
+'@
+        $expression = $expression.Replace('__ADDRESS__', (ConvertTo-Json -InputObject $PackageAddress.AbsoluteUri -Compress))
     }
     $command = @{ id=1; method='Runtime.evaluate'; params=@{ expression=$expression; returnByValue=$true } } | ConvertTo-Json -Compress -Depth 5
     $packet = [ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($command))

@@ -25,6 +25,7 @@ try {
     $env:LOCALAPPDATA = $local
     $env:TEMP = Join-Path $local 'Temp'
     $env:TMP = $env:TEMP
+    $env:DSH_HOME = Join-Path $profile '.dsh'
     New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
     $installer = Join-Path $PSScriptRoot 'dsh-0.2.2-rc.1.exe'
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne '830947F8996DC05D991CA9133FFF4D3400073E47B9CFA6507754867E79482B23') {
@@ -108,6 +109,19 @@ try {
                     Start-Sleep -Seconds 2
                     & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
                         Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-install-proof.json')
+                    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/93c73ec334d302ff0e2d7ffb2ffc8ee26bc402f0/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
+                    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
+                    if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Install')) { throw 'Official Install control was not available.' }
+                    $installed = Join-Path $env:DSH_HOME 'profiles\desktop\node_modules\dsh-live-compact'
+                    $installDeadline = [DateTime]::UtcNow.AddSeconds(105)
+                    while (-not (Test-Path -LiteralPath (Join-Path $installed 'index.js')) -and [DateTime]::UtcNow -lt $installDeadline) { Start-Sleep -Seconds 3 }
+                    $package = Get-Content -LiteralPath (Join-Path $installed 'package.json') -Raw | ConvertFrom-Json
+                    $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
+                    $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
+                    if ($package.version -ne '1.1.2' -or $engineHash -ne '5e6f0536d8fb2d1707d14597dfbd8af6c047e2746a60705889ea531e0b937f96' -or
+                        $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
+                    [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
+                        ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
                 }
                 break
             }

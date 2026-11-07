@@ -100,10 +100,15 @@ try {
         }
         ConvertTo-Json -InputObject $renderer -Compress -Depth 5 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
         foreach ($target in @($targets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl })) {
-            if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -OpenPluginManager) {
+            if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Plugins') {
                 Start-Sleep -Seconds 3
                 & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
                     Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-manager-proof.json')
+                if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -Click 'Add plugin') {
+                    Start-Sleep -Seconds 2
+                    & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
+                        Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-install-proof.json')
+                }
                 break
             }
         }

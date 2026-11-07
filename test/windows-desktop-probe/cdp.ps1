@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [switch]$OpenPluginManager)
+param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin')][string]$Click)
 $ErrorActionPreference = 'Stop'
 if ($Endpoint.Scheme -ne 'ws' -or $Endpoint.Host -ne '127.0.0.1' -or $Endpoint.Port -ne $Port) {
     throw 'CDP must stay on the test application loopback port.'
@@ -15,23 +15,26 @@ JSON.stringify({
   ready: document.readyState,
   documentNodes: document.body?.childElementCount || 0,
   status: (document.body?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 180),
-  buttons: [...document.querySelectorAll('button, [role="button"], a')]
+  buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))
-    .filter(Boolean).slice(0, 35)
+    .filter(Boolean).slice(0, 35),
+  inputs: [...document.querySelectorAll('input')].filter(el => el.getClientRects().length)
+    .map(el => ({type: el.type, label: el.getAttribute('aria-label'), placeholder: el.placeholder})).slice(0, 15)
 })
 '@
-    if ($OpenPluginManager) {
+    if ($Click) {
         $expression = @'
 (() => {
   if (location.protocol !== 'dsh-app:') return false;
   const entry = [...document.querySelectorAll('button, [role="button"]')].find(el =>
-    el.getClientRects().length && (el.getAttribute('aria-label') || el.title || el.textContent || '').trim() === 'Plugins');
+    el.getClientRects().length && (el.getAttribute('aria-label') || el.title || el.textContent || '').trim() === __LABEL__);
   if (!entry) return false;
   entry.click();
   return true;
 })()
 '@
+        $expression = $expression.Replace('__LABEL__', (ConvertTo-Json -InputObject $Click -Compress))
     }
     $command = @{ id=1; method='Runtime.evaluate'; params=@{ expression=$expression; returnByValue=$true } } | ConvertTo-Json -Compress -Depth 5
     $packet = [ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($command))

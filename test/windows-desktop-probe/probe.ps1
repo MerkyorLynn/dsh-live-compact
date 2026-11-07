@@ -9,6 +9,7 @@ if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne '830947F89
     (Get-AuthenticodeSignature -FilePath $installer).Status -ne 'Valid') { throw 'Unexpected official installer hash or signature.' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'child.ps1') -Destination $root
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uia.ps1') -Destination $root
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'cdp.ps1') -Destination $root
 $name = 'dshDesk' + [Guid]::NewGuid().ToString('N').Substring(0,8)
 $bytes = [byte[]]::new(24)
 [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
@@ -30,7 +31,7 @@ try {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $child.Id /T /F 2>$null | Out-Null
         throw 'Standard-user Desktop probe timed out.'
     }
-    foreach ($f in @('desktop-env-proof.json','desktop-proof.json','uia-diagnostic.txt','desktop-failure.txt')) {
+    foreach ($f in @('desktop-env-proof.json','desktop-proof.json','cdp-proof.json','uia-diagnostic.txt','desktop-failure.txt')) {
         $p = Join-Path $root $f
         if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -TotalCount 32 }
     }

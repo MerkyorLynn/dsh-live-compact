@@ -88,6 +88,10 @@ try {
             $page = @($targets | Where-Object { $_.type -eq 'page' -and $_.webSocketDebuggerUrl -and $_.title }) | Select-Object -First 1
         } catch {}
     } until ($page -or [DateTime]::UtcNow -gt $deadline)
+    if ($page) {
+        & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $page.webSocketDebuggerUrl -Port $port |
+            Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
+    }
     $process.Refresh()
     $automation = $false
     if ($process.MainWindowHandle -ne [IntPtr]::Zero) {

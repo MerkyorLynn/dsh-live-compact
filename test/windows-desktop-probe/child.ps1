@@ -47,7 +47,7 @@ try {
     $listener.Start()
     $port = $listener.LocalEndpoint.Port
     $listener.Stop()
-    $process = Start-Process -FilePath $app.FullName -ArgumentList @("--remote-debugging-port=$port","--remote-debugging-address=127.0.0.1") -PassThru
+    $process = Start-Process -FilePath $app.FullName -ArgumentList @("--remote-debugging-port=$port","--remote-debugging-address=127.0.0.1","--force-renderer-accessibility") -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(75)
     $page = $null
     do {
@@ -59,6 +59,12 @@ try {
         } catch {}
     } until ($page -or [DateTime]::UtcNow -gt $deadline)
     $process.Refresh()
+    $automation = $false
+    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
+        $legacyShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        & $legacyShell -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia.ps1') -WindowHandle $process.MainWindowHandle.ToInt64() -AppProcess $process.Id
+        $automation = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'uia-proof.json'))
+    }
     [pscustomobject]@{
         StandardUser = $true
         InstallerExitCode = $installCode
@@ -68,8 +74,9 @@ try {
         Alive = -not $process.HasExited
         NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero
         AutomationPage = [bool]$page
+        WindowsAutomation = $automation
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-proof.json')
-    if (-not $page) { throw 'DESKTOP_AUTOMATION_BLOCKED: no authentic renderer page available to the ordinary account.' }
+    if (-not $page -and -not $automation) { throw 'DESKTOP_AUTOMATION_BLOCKED: neither CDP nor native UI Automation could read the official window.' }
 } catch {
     $_.Exception.Message | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-failure.txt')
     exit 1

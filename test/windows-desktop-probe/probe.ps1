@@ -8,6 +8,7 @@ Invoke-WebRequest -Uri 'https://download.deepseek.com/desktop/dsh-latest-windows
 if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne '830947F8996DC05D991CA9133FFF4D3400073E47B9CFA6507754867E79482B23' -or
     (Get-AuthenticodeSignature -FilePath $installer).Status -ne 'Valid') { throw 'Unexpected official installer hash or signature.' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'child.ps1') -Destination $root
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'uia.ps1') -Destination $root
 $name = 'dshDesk' + [Guid]::NewGuid().ToString('N').Substring(0,8)
 $bytes = [byte[]]::new(24)
 [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)

@@ -225,16 +225,29 @@ function verifyRotationGuard(root, identity, guard) {
   }
 }
 
+function releaseRotationGuard(root, identity, guard) {
+  verifyRotationGuard(root, identity, guard);
+  if (guard.owned) unlinkSync(join(root, ROTATION_LOCK));
+}
+
 function acquireRotationGuard(root, identity) {
   const lock = join(root, ROTATION_LOCK);
   const record = { pid: process.pid, id: randomBytes(24).toString("hex") };
+  let guard;
   try {
     const published = publishRotationRecord(lock, record);
-    const guard = { owned: true, record: published };
+    guard = { owned: true, record: published };
     verifyRotationGuard(root, identity, guard);
     return guard;
   } catch (error) {
     shadowUsage = null;
+    if (guard) {
+      // Publication succeeded, but acquisition never returned its ownership
+      // handle. Retry validation before releasing only that exact root/object/
+      // record; a replacement or an unreadable guard must remain untouched.
+      try { releaseRotationGuard(root, identity, guard); } catch {}
+      throw error;
+    }
     if (error?.code === "ESHADOWLINKUNSUPPORTED") {
       // Fence out all future exclusive estimates BEFORE observing a possible
       // earlier transaction. An exclusive owner publishes its lock first, so
@@ -390,10 +403,12 @@ export function withShadowRoot(dir, action) {
   } finally {
     rotationScope = null;
     try {
-      verifyRotationGuard(root, identity, guard);
-      if (guard.owned) unlinkSync(join(root, ROTATION_LOCK));
+      releaseRotationGuard(root, identity, guard);
     } catch (error) {
       shadowUsage = null;
+      // A transient verification failure must not strand a live owned lock.
+      // Retry only with the original handle and the same verification checks.
+      if (guard.owned) { try { releaseRotationGuard(root, identity, guard); } catch {} }
       throw coordinationError(error);
     }
   }
@@ -873,7 +888,7 @@ export function ensureShadowDir(dir, access = {}) {
   return dir;
 }
 
-function tightenCreatedShadow(file, fd, access) {
+export function tightenCreatedShadow(file, fd, access, { remember = true } = {}) {
   if ((access.platform ?? process.platform) === "win32" && !access.runner && !shadowFuse) {
     try {
       if (shadowDirLocked(dirname(file))) {
@@ -883,7 +898,8 @@ function tightenCreatedShadow(file, fd, access) {
           throw new Error("spine: shadow created file identity changed");
         }
         // Only this wx-created object is known to inherit our confirmed DACL.
-        lockedFiles.set(entry.canonical, entry);
+        if (remember) lockedFiles.set(entry.canonical, entry);
+        return;
       }
     } catch (cause) {
       tripFuse();

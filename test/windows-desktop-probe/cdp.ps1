@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin','Install','CandidateDetails')][string]$Click, [uri]$PackageAddress)
+param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin','Install','Refresh','DismissInstall','CandidateDetails')][string]$Click, [uri]$PackageAddress)
 $ErrorActionPreference = 'Stop'
 if ($Endpoint.Scheme -ne 'ws' -or $Endpoint.Host -ne '127.0.0.1' -or $Endpoint.Port -ne $Port) {
     throw 'CDP must stay on the test application loopback port.'
@@ -15,6 +15,8 @@ JSON.stringify({
   ready: document.readyState,
   documentNodes: document.body?.childElementCount || 0,
   status: (document.body?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 180),
+  pluginStatus: (document.body?.innerText || '').split('\n')
+    .filter(text => /live compact|dsh-live-compact|边做边压|install|restart|起切/i.test(text)).slice(0, 25),
   buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))
@@ -28,10 +30,14 @@ JSON.stringify({
         $expression = @'
 (() => {
   if (location.protocol !== 'dsh-app:') return false;
-  const entry = [...document.querySelectorAll('button, [role="button"]')].find(el => {
+  const installDialog = document.querySelector('input[aria-label="Package name or address"]')?.closest('[role="dialog"]');
+  const scope = __LABEL__ === 'DismissInstall' ? installDialog : document;
+  if (!scope) return false;
+  const entry = [...scope.querySelectorAll('button, [role="button"]')].find(el => {
     const label = (el.getAttribute('aria-label') || el.title || el.textContent || '').trim();
     return el.getClientRects().length && (__LABEL__ === 'CandidateDetails'
-      ? /^View\s+.*(?:Live Compact|dsh-live-compact|边做边压)/i.test(label) : label === __LABEL__);
+      ? /^(?:View|Manage|Configure)\s+.*(?:Live Compact|dsh-live-compact|边做边压)/i.test(label)
+      : label === (__LABEL__ === 'DismissInstall' ? 'Close' : __LABEL__));
   });
   if (!entry || entry.disabled || entry.getAttribute('aria-disabled') === 'true') return false;
   entry.click();

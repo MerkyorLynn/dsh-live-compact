@@ -70,7 +70,10 @@ try {
     '' | Set-Content -LiteralPath $npmGlobalConfig -Encoding utf8NoBOM
     $setupOut = Join-Path $root 'runtime-setup.stdout.log'
     $setupErr = Join-Path $root 'runtime-setup.stderr.log'
-    $install = "`"$npm`" install --ignore-scripts --save-exact --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000 --registry=https://registry.npmjs.org/ --userconfig=`"$npmUserConfig`" --globalconfig=`"$npmGlobalConfig`" @deepseek-ai/dsh@0.2.0-rc.2 @deepseek-ai/dsh-llm-replay@0.2.0-rc.2 pnpm@11.7.0"
+    $dshVersion = $env:DSH_VERIFY_VERSION
+    if ($dshVersion -notin @('0.2.0-rc.2','0.2.1-rc.2')) { throw 'Unexpected DSH version for the native probe.' }
+    Write-Host "PINNED_DSH_VERSION $dshVersion"
+    $install = "`"$npm`" install --ignore-scripts --save-exact --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000 --registry=https://registry.npmjs.org/ --userconfig=`"$npmUserConfig`" --globalconfig=`"$npmGlobalConfig`" @deepseek-ai/dsh@$dshVersion @deepseek-ai/dsh-llm-replay@$dshVersion pnpm@11.7.0"
     $setup = Start-Process -FilePath $node -ArgumentList $install -WorkingDirectory $runtime -RedirectStandardOutput $setupOut -RedirectStandardError $setupErr -PassThru
     $setupDeadline = [DateTime]::UtcNow.AddMinutes(6)
     while (-not $setup.WaitForExit(20000)) {

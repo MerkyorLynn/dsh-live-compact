@@ -7,7 +7,8 @@ import { execFileSync, spawn } from 'node:child_process';
 
 export const here = dirname(fileURLToPath(import.meta.url));
 export const repository = resolve(here, '../..');
-export const version = '0.2.0-rc.2';
+export const version = process.env.DSH_VERIFY_VERSION ?? '0.2.0-rc.2';
+assert.ok(['0.2.0-rc.2', '0.2.1-rc.2'].includes(version), 'pinned DSH verification version');
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 export const save = (file, value) => writeFileSync(file, JSON.stringify(value, null, 2) + '\n');

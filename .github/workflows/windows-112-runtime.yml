@@ -13,8 +13,19 @@ jobs:
         include:
           - runner: windows-11-arm
             arch: arm64
+            node: '22.22.2'
+            dsh: '0.2.0-rc.2'
           - runner: windows-2022
             arch: x64
+            node: '22.22.2'
+            dsh: '0.2.0-rc.2'
+          - runner: windows-2022
+            arch: x64
+            node: '24.15.0'
+            dsh: '0.2.1-rc.2'
+    name: runtime (${{ matrix.runner }}, DSH ${{ matrix.dsh }})
+    env:
+      DSH_VERIFY_VERSION: ${{ matrix.dsh }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 16
     steps:
@@ -27,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.22.2'
+          node-version: ${{ matrix.node }}
           architecture: ${{ matrix.arch }}
       - name: Candidate and harness contract checks (not runtime acceptance)
         run: node --test test/windows-runtime/contract.test.mjs

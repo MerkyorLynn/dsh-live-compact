@@ -60,11 +60,13 @@ try {
     New-Item -ItemType Directory -Path $runtime | Out-Null
     '{"name":"disposable-dsh112-runtime","private":true,"type":"module"}' | Set-Content -LiteralPath (Join-Path $runtime 'package.json') -Encoding utf8NoBOM
     $npm = Join-Path (Split-Path $node -Parent) 'node_modules\npm\bin\npm-cli.js'
-    $npmConfig = Join-Path $root 'empty.npmrc'
-    '' | Set-Content -LiteralPath $npmConfig -Encoding utf8NoBOM
+    $npmUserConfig = Join-Path $root 'empty-user.npmrc'
+    $npmGlobalConfig = Join-Path $root 'empty-global.npmrc'
+    '' | Set-Content -LiteralPath $npmUserConfig -Encoding utf8NoBOM
+    '' | Set-Content -LiteralPath $npmGlobalConfig -Encoding utf8NoBOM
     $setupOut = Join-Path $root 'runtime-setup.stdout.log'
     $setupErr = Join-Path $root 'runtime-setup.stderr.log'
-    $install = "`"$npm`" install --ignore-scripts --save-exact --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000 --registry=https://registry.npmjs.org/ --userconfig=`"$npmConfig`" --globalconfig=`"$npmConfig`" @deepseek-ai/dsh@0.2.0-rc.2 @deepseek-ai/dsh-llm-replay@0.2.0-rc.2 pnpm@11.7.0"
+    $install = "`"$npm`" install --ignore-scripts --save-exact --no-audit --no-fund --fetch-retries=0 --fetch-timeout=30000 --registry=https://registry.npmjs.org/ --userconfig=`"$npmUserConfig`" --globalconfig=`"$npmGlobalConfig`" @deepseek-ai/dsh@0.2.0-rc.2 @deepseek-ai/dsh-llm-replay@0.2.0-rc.2 pnpm@11.7.0"
     $setup = Start-Process -FilePath $node -ArgumentList $install -WorkingDirectory $runtime -RedirectStandardOutput $setupOut -RedirectStandardError $setupErr -PassThru
     $setupDeadline = [DateTime]::UtcNow.AddMinutes(6)
     while (-not $setup.WaitForExit(20000)) {

@@ -129,13 +129,33 @@ try {
                     [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
                         ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
                     Start-Sleep -Seconds 4
+                    $enabled = $false
                     for ($attempt = 0; $attempt -lt 14; $attempt++) {
                         try {
                             $activeTargets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
                             $active = $activeTargets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl } | Select-Object -First 1
                             if ($active) {
-                                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port |
-                                    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'post-install-proof.json')
+                                $view = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port
+                                $view | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'post-install-proof.json')
+                                $state = $view | ConvertFrom-Json
+                                if (-not $enabled -and ($state.buttons -contains 'Enable now' -or $state.buttons -contains 'Enable dsh-live-compact')) {
+                                    $enabled = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'EnableCandidate'
+                                    if ($enabled) { Start-Sleep -Seconds 4; continue }
+                                }
+                                if ($state.minTokens -and -not $state.minTokens.disabled) {
+                                    $changed = & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -SettingValue '24000'
+                                    $saved = $changed -and (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'SaveCandidate')
+                                    $profilePatch = Join-Path $env:DSH_HOME 'profiles\desktop\cordis.patch.yml'
+                                    for ($persist = 0; $saved -and $persist -lt 12; $persist++) {
+                                        if ((Test-Path -LiteralPath $profilePatch) -and (Select-String -LiteralPath $profilePatch -Pattern '^\s*minTokens:\s*24000\s*$' -Quiet)) {
+                                            [pscustomobject]@{ SettingsField = 'minTokens'; SavedValue = 24000; PersistedInProfile = $true } |
+                                                ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'settings-save-proof.json')
+                                            break
+                                        }
+                                        Start-Sleep -Seconds 1
+                                    }
+                                    break
+                                }
                                 if ($attempt -eq 2) {
                                     & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'DismissInstall' | Out-Null
                                     & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port -Click 'Refresh' | Out-Null
@@ -145,7 +165,6 @@ try {
                                 Start-Sleep -Seconds 2
                                 & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $active.webSocketDebuggerUrl -Port $port |
                                     Set-Content -LiteralPath (Join-Path $PSScriptRoot 'candidate-details-proof.json')
-                                break
                             }
                         } catch {}
                         Start-Sleep -Seconds 3

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin','Install','Refresh','DismissInstall','CandidateDetails')][string]$Click, [uri]$PackageAddress)
+param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [ValidateSet('Plugins','Add plugin','Choose how to add a plugin','Install','Refresh','DismissInstall','CandidateDetails','EnableCandidate','SaveCandidate')][string]$Click, [uri]$PackageAddress, [ValidateSet('24000','25000')][string]$SettingValue)
 $ErrorActionPreference = 'Stop'
 if ($Endpoint.Scheme -ne 'ws' -or $Endpoint.Host -ne '127.0.0.1' -or $Endpoint.Port -ne $Port) {
     throw 'CDP must stay on the test application loopback port.'
@@ -17,6 +17,11 @@ JSON.stringify({
   status: (document.body?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 180),
   pluginStatus: (document.body?.innerText || '').split('\n')
     .filter(text => /live compact|dsh-live-compact|边做边压|install|restart|起切/i.test(text)).slice(0, 25),
+  minTokens: (() => {
+    const root = document.getElementById('live-compact-minTokens');
+    const field = root?.matches('input') ? root : root?.querySelector('input');
+    return field ? {value: field.value, disabled: field.disabled} : null;
+  })(),
   buttons: [...document.querySelectorAll('button, [role="button"], [role="menuitem"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))
@@ -35,9 +40,14 @@ JSON.stringify({
   if (!scope) return false;
   const entry = [...scope.querySelectorAll('button, [role="button"]')].find(el => {
     const label = (el.getAttribute('aria-label') || el.title || el.textContent || '').trim();
-    return el.getClientRects().length && (__LABEL__ === 'CandidateDetails'
-      ? /^(?:View|Manage|Configure)\s+.*(?:Live Compact|dsh-live-compact|边做边压)/i.test(label)
-      : label === (__LABEL__ === 'DismissInstall' ? 'Close' : __LABEL__));
+    if (!el.getClientRects().length) return false;
+    switch (__LABEL__) {
+      case 'CandidateDetails': return /^(?:View|Manage|Configure)\s+.*(?:Live Compact|dsh-live-compact|边做边压)/i.test(label);
+      case 'EnableCandidate': return label === 'Enable now' || label === 'Enable dsh-live-compact';
+      case 'SaveCandidate': return !!document.getElementById('live-compact-minTokens') && (label === 'Save' || label === '保存');
+      case 'DismissInstall': return label === 'Close';
+      default: return label === __LABEL__;
+    }
   });
   if (!entry || entry.disabled || entry.getAttribute('aria-disabled') === 'true') return false;
   entry.click();
@@ -63,6 +73,21 @@ JSON.stringify({
 })()
 '@
         $expression = $expression.Replace('__ADDRESS__', (ConvertTo-Json -InputObject $PackageAddress.AbsoluteUri -Compress))
+    }
+    if ($SettingValue) {
+        $expression = @'
+(() => {
+  if (location.protocol !== 'dsh-app:') return false;
+  const root = document.getElementById('live-compact-minTokens');
+  const input = root?.matches('input') ? root : root?.querySelector('input');
+  if (!input || input.disabled || !input.getClientRects().length) return false;
+  input.focus();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, __VALUE__);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return input.value === __VALUE__;
+})()
+'@
+        $expression = $expression.Replace('__VALUE__', (ConvertTo-Json -InputObject $SettingValue -Compress))
     }
     $command = @{ id=1; method='Runtime.evaluate'; params=@{ expression=$expression; returnByValue=$true } } | ConvertTo-Json -Compress -Depth 5
     $packet = [ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($command))

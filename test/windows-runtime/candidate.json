@@ -1,10 +1,10 @@
 {
-  "base": "08efa08e300b1a2dda995338b09d597329fae8d9",
+  "base": "f3cc5aba1fd8adc6324f62a8bc8dd01d1f07bcc9",
   "name": "dsh-live-compact",
   "version": "1.1.2",
   "filename": "dsh-live-compact-1.1.2.tgz",
-  "bytes": 75656,
-  "sha256": "19cf6acf3a03040108b1d1e8c4161aa4edaffd752d88685bf3fe8bc69462d62b",
+  "bytes": 75689,
+  "sha256": "8cc63ffdbcd06480c8eb1cce1378f4ef323cc8c7f92f5b43166e36fa82a05da5",
   "files": [
     {
       "path": "LICENSE",
@@ -43,8 +43,8 @@
     },
     {
       "path": "gate.js",
-      "bytes": 5944,
-      "sha256": "3f98d4157ea4dc222bc2dd9e82e883c408cdffcddb30cea377cdf41ecf01d2b8"
+      "bytes": 5997,
+      "sha256": "a12df2d3694f1be520f54ea8ec38f43993239ff6affa12924ad2ac318d3f3f79"
     },
     {
       "path": "index.js",
@@ -53,8 +53,8 @@
     },
     {
       "path": "package.json",
-      "bytes": 2649,
-      "sha256": "034a08861be6f467e764265968286bd773eff00761eb809aad96418581a1cd5d"
+      "bytes": 2678,
+      "sha256": "6bef4d43354db471994d8335fc06802cbf75ba4941554d099882a7ed723e6cfe"
     },
     {
       "path": "plan.js",

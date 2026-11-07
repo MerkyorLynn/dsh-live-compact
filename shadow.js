@@ -138,14 +138,26 @@ function publishRotationRecord(file, record) {
     created = true;
     writeFileSync(fd, rotationRecordText(record));
     fsyncSync(fd);
+    const info = fstatSync(fd, { bigint: true });
+    const published = { ...record, identity: `${info.dev}:${info.ino}` };
     closeSync(fd);
     fd = undefined;
     // Same-directory hard links atomically publish a complete, closed file on
     // POSIX and Windows. Unlike rename, link never replaces an existing lock.
-    linkSync(temp, file);
+    try { linkSync(temp, file); } catch (cause) {
+      // Only a failure of this operation proves that hardlink publication is
+      // unsupported. Permission, I/O and other ambiguous errors stay closed.
+      if (!["ENOTSUP", "EOPNOTSUPP", "ENOSYS"].includes(cause?.code)) throw cause;
+      const error = new Error("shadow hardlink publication unsupported", { cause });
+      error.code = "ESHADOWLINKUNSUPPORTED";
+      throw error;
+    }
+    return published;
   } finally {
     if (fd !== undefined) closeSync(fd);
-    if (created) unlinkSync(temp);
+    // The temp is only an extra name. Cleanup must neither hide publication's
+    // outcome nor discard the exact ownership handle of an already live lock.
+    if (created) { try { unlinkSync(temp); } catch {} }
   }
 }
 
@@ -157,19 +169,56 @@ function syncRotationDirectory(root) {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-function persistRotationShared(root) {
-  const fd = openSync(join(root, ROTATION_SHARED), "a", 0o600);
+function persistRotationFence(root, name) {
+  const file = join(root, name);
+  const fd = openSync(file, "a", 0o600);
+  let identity;
   try {
-    if (!fstatSync(fd).isFile()) throw new Error("invalid shadow shared marker");
+    const info = fstatSync(fd, { bigint: true });
+    if (!info.isFile()) throw new Error("invalid shadow fence");
+    identity = `${info.dev}:${info.ino}`;
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
   syncRotationDirectory(root);
+  return identity;
+}
+
+function persistRotationShared(root) {
+  return persistRotationFence(root, ROTATION_SHARED);
+}
+
+function linklessRecoveryName(record) {
+  // An empty file's name atomically records the complete proven-dead token;
+  // unlike writing JSON via wx, a crash cannot expose a partial recovery record.
+  return `${ROTATION_RECOVERED}-${record.pid}-${record.id}`;
+}
+
+function hasLinklessRecovery(root, record) {
+  try {
+    const info = lstatSync(join(root, linklessRecoveryName(record)));
+    if (!info.isFile() || info.size !== 0) throw new Error("invalid shadow recovery fence");
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function verifyRotationGuard(root, identity, guard) {
   if (identity && directoryIdentity(root) !== identity) throw new Error("shadow directory identity changed");
+  if (!guard.record) {
+    const fence = lstatSync(join(root, ROTATION_SHARED), { bigint: true });
+    if (!guard.sharedIdentity || !fence.isFile() || `${fence.dev}:${fence.ino}` !== guard.sharedIdentity) {
+      throw new Error("shadow shared fence identity changed");
+    }
+    try { lstatSync(join(root, ROTATION_LOCK)); } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    throw new Error("shadow transaction appeared during shared fallback");
+  }
   const current = readRotationRecord(join(root, ROTATION_LOCK));
   if (!sameRotationRecord(current, guard.record) || current.identity !== guard.record.identity) {
     throw new Error("shadow lock identity changed");
@@ -180,24 +229,42 @@ function acquireRotationGuard(root, identity) {
   const lock = join(root, ROTATION_LOCK);
   const record = { pid: process.pid, id: randomBytes(24).toString("hex") };
   try {
-    publishRotationRecord(lock, record);
-    const published = readRotationRecord(lock);
-    if (!sameRotationRecord(published, record)) throw new Error("shadow lock publication changed");
-    return { owned: true, record: published };
+    const published = publishRotationRecord(lock, record);
+    const guard = { owned: true, record: published };
+    verifyRotationGuard(root, identity, guard);
+    return guard;
   } catch (error) {
     shadowUsage = null;
+    if (error?.code === "ESHADOWLINKUNSUPPORTED") {
+      // Fence out all future exclusive estimates BEFORE observing a possible
+      // earlier transaction. An exclusive owner publishes its lock first, so
+      // absence after this durable fence cannot hide an active exclusive scope.
+      const sharedIdentity = persistRotationShared(root);
+      let observed;
+      try { observed = readRotationRecord(lock); } catch (failure) {
+        if (failure?.code !== "ENOENT") throw failure;
+        const guard = { owned: false, sharedIdentity };
+        verifyRotationGuard(root, identity, guard);
+        return guard;
+      }
+      return recoverRotationGuard(root, identity, { owned: false, record: observed });
+    }
     try { touchExclusive(join(root, ROTATION_SHARED)); } catch {}
     if (error?.code !== "EEXIST") throw error;
   }
 
-  const guard = { owned: false, record: readRotationRecord(lock) };
+  return recoverRotationGuard(root, identity, { owned: false, record: readRotationRecord(lock) });
+}
+
+function recoverRotationGuard(root, identity, guard) {
   const recovered = join(root, ROTATION_RECOVERED);
   let recovery;
   try { recovery = readRotationRecord(recovered); } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   if (recovery && !sameRotationRecord(recovery, guard.record)) throw new Error("shadow recovery identity changed");
-  if (!recovery) {
+  const knownDead = !!recovery || hasLinklessRecovery(root, guard.record);
+  if (!knownDead) {
     let dead = false;
     try { process.kill(guard.record.pid, 0); } catch (error) { dead = error?.code === "ESRCH"; }
     if (!dead) throw new Error("shadow holder is live or its death is unknown");
@@ -206,9 +273,10 @@ function acquireRotationGuard(root, identity) {
   // recovery. A later reused PID cannot resurrect this exact proven-dead token.
   persistRotationShared(root);
   verifyRotationGuard(root, identity, guard);
-  if (!recovery) {
+  if (!knownDead) {
     try { publishRotationRecord(recovered, guard.record); } catch (error) {
-      if (error?.code !== "EEXIST" || !sameRotationRecord(readRotationRecord(recovered), guard.record)) throw error;
+      if (error?.code === "ESHADOWLINKUNSUPPORTED") persistRotationFence(root, linklessRecoveryName(guard.record));
+      else if (error?.code !== "EEXIST" || !sameRotationRecord(readRotationRecord(recovered), guard.record)) throw error;
     }
     syncRotationDirectory(root);
   }

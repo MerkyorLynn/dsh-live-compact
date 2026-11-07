@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ensureShadowDir, tightenShadow, writeShadowFile } from "./shadow.js";
 
 const [role, root, expectedSid] = process.argv.slice(2);
@@ -34,12 +36,16 @@ if (role === "writer") {
   renameSync(replaced, join(root, "previous"));
   mkdirSync(replaced);
   execFileSync(icacls, [replaced, "/grant:r", "*S-1-1-0:(OI)(CI)RX"]);
+  assert.throws(() => writeShadowFile(replacementPayload, "must not be written"), (error) =>
+    error.code === "ESHADOWACCESS" && /directory identity changed/.test(error.cause?.message));
+  assert.equal(existsSync(replacementPayload), false);
+  console.log("ACL_STEP fresh-process directory protection");
+  execFileSync(process.execPath, [fileURLToPath(import.meta.url), "restarted-writer", root, expectedSid], { stdio: "inherit" });
+  assert.equal(readFileSync(legacy, "utf8"), "legacy synthetic backup");
+  assert.equal(readFileSync(replacementPayload, "utf8"), "replacement synthetic backup");
+  writeFileSync(join(root, "writer-proof.json"), JSON.stringify({ writerStandard: true, writerRead: true, replacedRefused: true, restartedWriter: true }));
+} else if (role === "restarted-writer") {
   writeShadowFile(replacementPayload, "replacement synthetic backup");
-  if (readFileSync(legacy, "utf8") !== "legacy synthetic backup" ||
-      readFileSync(replacementPayload, "utf8") !== "replacement synthetic backup") {
-    throw new Error("Writer could not read its secured legacy or replacement backup");
-  }
-  writeFileSync(join(root, "writer-proof.json"), JSON.stringify({ writerStandard: true, writerRead: true }));
 } else if (role === "reader") {
   if (readFileSync(join(root, "control.txt"), "utf8").trim() !== "positive control") throw new Error("Control read failed");
   const leaked = [];

@@ -89,8 +89,16 @@ try {
         } catch {}
     } until ($page -or [DateTime]::UtcNow -gt $deadline)
     if ($page) {
-        & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $page.webSocketDebuggerUrl -Port $port |
-            Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
+        $renderer = $null
+        for ($attempt = 0; $attempt -lt 6; $attempt++) {
+            $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
+            $renderer = @($targets | Where-Object { $_.type -eq 'page' -and $_.webSocketDebuggerUrl } | Select-Object -First 5 | ForEach-Object {
+                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $_.webSocketDebuggerUrl -Port $port | ConvertFrom-Json
+            })
+            if (@($renderer | Where-Object { $_.buttons.Count -gt 0 }).Count -gt 0) { break }
+            Start-Sleep -Seconds 4
+        }
+        ConvertTo-Json -InputObject $renderer -Compress -Depth 5 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
     }
     $process.Refresh()
     $automation = $false

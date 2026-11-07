@@ -10,8 +10,11 @@ try {
     $expression = @'
 JSON.stringify({
   title: document.title.slice(0, 80),
+  protocol: location.protocol,
   path: location.pathname.slice(0, 100),
   ready: document.readyState,
+  documentNodes: document.body?.childElementCount || 0,
+  status: (document.body?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 180),
   buttons: [...document.querySelectorAll('button, [role="button"], a')]
     .filter(el => el.getClientRects().length)
     .map(el => (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().slice(0, 70))

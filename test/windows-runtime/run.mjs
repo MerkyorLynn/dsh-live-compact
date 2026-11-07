@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -41,15 +41,19 @@ try {
   assert.ok(cliVersion.includes(version), 'actual CLI version');
   results.stages.install = { status: 'PASS', version, entrySha256: sha256(readFileSync(dsh)), lockSha256: sha256(readFileSync(join(runtime, 'package-lock.json'))) };
   current = 'plugin-install';
-  const officialPeers = ['dsh-compaction', 'dsh-compaction-basic', 'dsh-llm'];
-  await command('plugin-install', [dsh, 'plugin', '--profile', 'headless', 'add', '--ignore-scripts', '--save-exact', tarball,
-    ...officialPeers.map((name) => `@deepseek-ai/${name}@${version}`)],
-  { root, cwd: workspace, env, timeout: 240000 });
+  await command('plugin-install', [dsh, 'plugin', '--profile', 'headless', 'add', '--ignore-scripts', '--save-exact', tarball],
+    { root, cwd: workspace, env, timeout: 240000 });
   const profile = join(env.DSH_HOME, 'profiles/headless');
   const installed = realpathSync(join(profile, 'node_modules/dsh-live-compact'));
   for (const file of pin.files) assert.equal(sha256(readFileSync(join(installed, file.path))), file.sha256, `normal-path installed ${file.path}`);
   const manifest = json(join(profile, 'package.json'));
   assert.ok(manifest.dsh.profile.bundles.includes('dsh-live-compact'), 'normal CLI must select the candidate bundle');
+  // The external preloader imports the candidate before the CLI is booted.
+  // Resolve its peer scope to the exact official runtime, rather than installing
+  // separate copies of core packages with incomplete peer dependency graphs.
+  const scopedPeers = join(profile, 'node_modules/@deepseek-ai');
+  assert.equal(existsSync(scopedPeers), false, 'probe requires a clean profile peer scope');
+  symlinkSync(join(runtime, 'node_modules/@deepseek-ai'), scopedPeers, process.platform === 'win32' ? 'junction' : 'dir');
   const require = createRequire(join(installed, 'package.json'));
   const replayAnchor = createRequire(dshAnchor).resolve('@deepseek-ai/dsh-llm-replay/package.json');
   assert.equal(json(replayAnchor).version, version);

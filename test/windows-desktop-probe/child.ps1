@@ -6,13 +6,19 @@ try {
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if ($identity.User.Value -ne (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'expected-sid.txt')).Trim() -or
         $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Expected the standard test account.' }
-    $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-    $roaming = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::Create)
-    $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::Create)
-    if (-not $profile -or -not $roaming -or -not $local) { throw 'Standard account Windows known folders were not initialized.' }
-    $prefix = $profile.TrimEnd('\') + '\'
-    if (-not $roaming.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $local.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Windows application directories are outside the standard account profile.' }
+    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$($identity.User.Value)"
+    $profile = [Environment]::ExpandEnvironmentVariables((Get-ItemPropertyValue -LiteralPath $profileKey -Name ProfileImagePath))
+    if (-not (Test-Path -LiteralPath $profile -PathType Container)) { throw 'Standard account Windows profile is unavailable.' }
+    $roaming = Join-Path $profile 'AppData\Roaming'
+    $local = Join-Path $profile 'AppData\Local'
+    # Start-Process -Credential can retain the runner account's shell-folder
+    # environment. Initialize only the disposable test account's own hive.
+    $shellFolders = "Registry::HKEY_USERS\$($identity.User.Value)\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    if (-not (Test-Path -LiteralPath "Registry::HKEY_USERS\$($identity.User.Value)")) { throw 'Standard account Windows hive is unavailable.' }
+    if (-not (Test-Path -LiteralPath $shellFolders)) { New-Item -Path $shellFolders -Force | Out-Null }
+    New-ItemProperty -LiteralPath $shellFolders -Name 'AppData' -Value $roaming -PropertyType ExpandString -Force | Out-Null
+    New-ItemProperty -LiteralPath $shellFolders -Name 'Local AppData' -Value $local -PropertyType ExpandString -Force | Out-Null
+    New-Item -ItemType Directory -Path $roaming, $local -Force | Out-Null
     $env:USERPROFILE = $profile
     $env:HOME = $profile
     $env:APPDATA = $roaming

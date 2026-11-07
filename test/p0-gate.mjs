@@ -37,6 +37,8 @@ import {
   win32Tool,
   writeShadowOwner,
 } from "../shadow.js";
+import { DEFAULTS, readSettings } from "../settings.js";
+import shellEntry from "../shell.js";
 
 const failures = [];
 
@@ -714,12 +716,12 @@ check("p0-15 source has no SPINE_MAX_TOKENS", () => {
   }
 });
 
-check("p0-15 BIG_GATE stays 650000 with SPINE_MAX_TOKENS=1", () => {
-  const moduleURL = new URL("../index.js", import.meta.url).href;
+check("p0-15 bigGate stays 650000 with SPINE_MAX_TOKENS=1", () => {
+  const moduleURL = new URL("../settings.js", import.meta.url).href;
   const output = execFileSync(process.execPath, [
     "--input-type=module",
     "--eval",
-    `const { BIG_GATE } = await import(${JSON.stringify(moduleURL)}); process.stdout.write(String(BIG_GATE));`,
+    `const { DEFAULTS } = await import(${JSON.stringify(moduleURL)}); process.stdout.write(String(DEFAULTS.bigGate));`,
   ], {
     encoding: "utf8",
     env: { ...process.env, SPINE_MAX_TOKENS: "1" },
@@ -773,18 +775,74 @@ check("p0-15 README drops obsolete backup limits", () => {
   assert.equal(/\b(64|128)\s*Mi?B\b/i.test(readme), false);
 });
 
-check("p0-16 only adapter.js imports a DSH package", () => {
-  const adapter = join(packageRoot, "adapter.js");
+// 服务端只认 adapter.js；客户端 bundle 在宿主模块图里跑，只能自己 require 一次官方 primitives。
+check("p0-16 only the adapter and the client bundle import a DSH package", () => {
+  const allowed = new Set([join(packageRoot, "adapter.js"), join(packageRoot, "client.js")]);
   const files = packageJavaScriptFiles(packageRoot);
-  assert.ok(files.includes(adapter), adapter);
+  assert.ok(files.includes(join(packageRoot, "adapter.js")));
   for (const file of files) {
     const imports = /(?:from\s*|import\(\s*|require\(\s*)["']@deepseek-ai\//.test(readFileSync(file, "utf8"));
-    assert.equal(imports, file === adapter, file);
+    assert.equal(imports, allowed.has(file), file);
   }
+  const client = readFileSync(join(packageRoot, "client.js"), "utf8");
+  assert.equal((client.match(/["']@deepseek-ai\//g) ?? []).length, 1, "client names exactly one DSH package");
 });
 
 check("p0-16 package ships adapter.js", () => {
   assert.equal(packageJson.files.includes("adapter.js"), true);
+});
+
+check("p0-17 settings schema owns the plugin knobs", () => {
+  const shape = shellEntry.Config({});
+  const plain = (value) => (value && typeof value === "object" && typeof value.get === "function" ? value.get() : value);
+  const knobs = ["minTokens", "keepRounds", "keepRoundTokens", "pointerTokens", "chunkMin", "chunkMax", "bigGate", "cooldownMs"];
+  for (const key of knobs) assert.equal(plain(shape[key]), DEFAULTS[key], key);
+  assert.equal(plain(shape.takeoverPresets), true);
+  for (const key of ["auto", "thresholdRatio", "headroomTokens", "retainTokens", "compactionRetries"]) {
+    assert.equal(key in shape, true, key);
+  }
+  // 宿主设置界面只列 volatile 字段，漏标整份表单就不出现。
+  for (const [key, field] of Object.entries(shellEntry.Config.dict)) {
+    assert.equal(field.meta?.volatile, true, key);
+  }
+});
+
+check("p0-18 settings UI ships through native client slots", () => {
+  assert.equal(packageJson.exports["./client"], "./client.js");
+  assert.equal(packageJson.dsh.client.platform, "web");
+  assert.equal(packageJson.files.includes("client.js"), true);
+  const source = readFileSync(join(packageRoot, "client.js"), "utf8");
+  assert.match(source, /window\.__ModuleLoader__\.load\(/);
+  assert.match(source, /require\("react"\)/);
+  assert.match(source, /plugins\.row\.config/);
+  assert.match(source, /locale\.register/);
+  assert.match(source, /SettingsFormModel/);
+  assert.match(source, /settingsNumberField/);
+  assert.match(source, /configForms/);
+  assert.match(source, /SettingsValueField/);
+  assert.match(source, /props\.edit\(name, text\)/);
+  assert.match(source, /hooks: \{ liveCompact: store \}/);
+  assert.match(source, /model\.dispose\(\)/);
+  assert.equal(/^\s*(?:import|export)\s/m.test(source), false);
+  assert.equal(/from\s*["']@deepseek-ai\//.test(source), false);
+});
+
+check("p0-18 bundle exposes one component with an internal preset gate", () => {
+  const patch = readFileSync(join(packageRoot, "cordis.patch.yml"), "utf8");
+  assert.equal((patch.match(/name: dsh-live-compact\b/g) ?? []).length, 1);
+  assert.equal(patch.includes("live-compact-gate"), false);
+  assert.match(patch, /takeoverPresets: true/);
+  assert.match(readFileSync(join(packageRoot, "shell.js"), "utf8"), /installPresetGate\(ctx, config\)/);
+});
+
+check("p0-17 config beats env beats default", () => {
+  const env = { SPINE_MIN_TOKENS: "9000", SPINE_CHUNK_MIN: "500" };
+  assert.equal(readSettings({}, env).minTokens, 9000);
+  assert.equal(readSettings({ minTokens: 1234 }, env).minTokens, 1234);
+  assert.equal(readSettings({}, {}).minTokens, DEFAULTS.minTokens);
+  assert.equal(readSettings({}, {}).pointerTokens, DEFAULTS.chunkMax);
+  assert.equal(readSettings({ chunkMax: 40000 }, {}).pointerTokens, 40000);
+  assert.equal(readSettings({ chunkMax: 40000, pointerTokens: 7000 }, {}).pointerTokens, 7000);
 });
 
 if (failures.length) {

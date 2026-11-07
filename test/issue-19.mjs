@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { BIG_GATE } from "../index.js";
+import { DEFAULTS } from "../settings.js";
 import { cutCrossesNewerCheckpoint, selectCutIndexes } from "../plan.js";
 import { drainRewrite } from "../shadow.js";
 
@@ -11,11 +11,11 @@ const round = (tokens) => ({ type: "tool", tokens, checkpoint: false, balancedAf
 const card = () => ({ type: "other", tokens: 200, checkpoint: true, balancedAfter: true, balancedBefore: true });
 
 test("issue 19 constants stay on the published lines", () => {
-  assert.equal(BIG_GATE, 650000);
-  assert.match(indexSource, /const CHUNK_MIN = Number\(process\.env\.SPINE_CHUNK_MIN \|\| 1000\)/);
+  assert.equal(DEFAULTS.bigGate, 650000);
+  assert.equal(DEFAULTS.chunkMin, 1000);
+  assert.equal(DEFAULTS.keepRoundTokens, 32000);
   assert.match(indexSource, /const URGENT_TOKENS = 48000/);
   assert.match(indexSource, /const MAX_TAIL = 2200/);
-  assert.match(indexSource, /const KEEP_ROUND_TOKENS = Number\(process\.env\.SPINE_KEEP_ROUND_TOKENS \|\| 32000\)/);
   assert.equal(indexSource.includes("SPINE_MAX_TOKENS"), false);
 });
 

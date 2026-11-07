@@ -11,3 +11,6 @@ export const loadBase = () => import("@deepseek-ai/dsh-compaction-basic");
 export const loadCompaction = () => import("@deepseek-ai/dsh-compaction");
 
 export const loadLlm = () => import("@deepseek-ai/dsh-llm");
+
+// 官方设置界面读的是 schemastery schema，构造器同样从这里取。
+export const loadSchema = () => import("@deepseek-ai/schemastery");

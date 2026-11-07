@@ -3,7 +3,6 @@ import { STOCK_ENGINE as STOCK } from "./adapter.js";
 
 const OURS = "dsh-live-compact";
 const PRESET_IDS = new Set(["standard", "ptc", "minimal", "cordis", "preset-standard", "preset-ptc", "preset-minimal", "preset-cordis"]);
-export const GATE_SERVICE = "liveCompactPresetGate";
 export const PRESET_ENGINE_CONFIG = {
   auto: true,
   thresholdRatio: Number(process.env.SPINE_THRESHOLD_RATIO || 0.8),
@@ -85,30 +84,41 @@ function engineEntry(node) {
   return null;
 }
 
+// One host listener, owned by the first (root) entry, never one per preset engine.
+const installedGates = new WeakMap();
+
+export function installPresetGate(ctx, config = {}) {
+  if (installedGates.has(ctx.root)) return;
+  installedGates.set(ctx.root, true);
+  ctx.effect(() => () => installedGates.delete(ctx.root));
+  const enabled = () => {
+    const value = config.takeoverPresets ?? true;
+    return typeof value === "boolean" ? value : value.get();
+  };
+  const seen = new Set();
+  ctx.on("internal/config", function (_raw, next) {
+    const resolved = next();
+    if (!enabled()) return resolved;
+    const loadable = packageLoadable();
+    const rewritten = rewritePresetConfig(resolved, loadable);
+    const id = rewritten?.id || rewritten?.config?.id;
+    if (isPreset(resolved) && id && !seen.has(String(id))) {
+      seen.add(String(id));
+      const engine = engineEntry(rewritten);
+      if (engine) {
+        const config = engine.config || {};
+        ctx.logger?.info?.(`spine: 预设 ${id} 已换包 ${engine.name} thresholdRatio=${config.thresholdRatio} headroomTokens=${config.headroomTokens} retainTokens=${config.retainTokens} compactionRetries=${config.compactionRetries}`);
+      } else if (!loadable) {
+        ctx.logger?.warn?.(`spine: 本会话未接管预设 ${id}，仍用原版压缩。`);
+      }
+    }
+    return rewritten;
+  }, { global: true });
+}
+
+// Legacy entry for existing compositions; new installs only register compaction-spine.
 export default class LiveCompactGate {
   constructor(ctx) {
-    const seen = new Set();
-    ctx.on("internal/config", function (_raw, next) {
-      const resolved = next();
-      try {
-        const loadable = packageLoadable();
-        const rewritten = rewritePresetConfig(resolved, loadable);
-        const id = rewritten?.id || rewritten?.config?.id;
-        if (isPreset(resolved) && id && !seen.has(String(id))) {
-          seen.add(String(id));
-          const engine = engineEntry(rewritten);
-          if (engine) {
-            const config = engine.config || {};
-            ctx.logger?.info?.(`spine: 预设 ${id} 已换包 ${engine.name} thresholdRatio=${config.thresholdRatio} headroomTokens=${config.headroomTokens} retainTokens=${config.retainTokens} compactionRetries=${config.compactionRetries}`);
-          } else if (!loadable) {
-            ctx.logger?.warn?.(`spine: 本会话未接管预设 ${id}，仍用原版压缩。`);
-          }
-        }
-        return rewritten;
-      } catch {
-        return resolved;
-      }
-    }, { global: true });
-    ctx.provide(GATE_SERVICE, {});
+    installPresetGate(ctx);
   }
 }

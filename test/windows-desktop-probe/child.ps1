@@ -41,7 +41,8 @@ try {
     if (-not $app) { throw "Desktop executable was not found in mode $launchMode." }
     if ((Get-AuthenticodeSignature -FilePath $app.FullName).Status -ne 'Valid') { throw 'Desktop executable signature did not validate.' }
     $version = $app.VersionInfo.ProductVersion
-    if ($version -notmatch '^0\.2\.2-rc\.1(?:$|\s)') { throw "Unexpected installed version $version." }
+    # PE version metadata is numeric; the signed installer digest pins the prerelease.
+    if ($version -notmatch '^0\.2\.2(?:\.0|-rc\.1)?$') { throw "Unexpected Desktop executable version $version." }
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
     $listener.Start()
     $port = $listener.LocalEndpoint.Port
@@ -62,7 +63,8 @@ try {
         StandardUser = $true
         InstallerExitCode = $installCode
         LaunchMode = $launchMode
-        DesktopVersion = $version
+        SignedInstallerVersion = '0.2.2-rc.1'
+        DesktopExecutableVersion = $version
         Alive = -not $process.HasExited
         NativeWindow = $process.MainWindowHandle -ne [IntPtr]::Zero
         AutomationPage = [bool]$page

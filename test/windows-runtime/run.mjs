@@ -152,7 +152,7 @@ try {
     const scope = join(repository, 'node_modules');
     mkdirSync(scope);
     symlinkSync(join(runtime, 'node_modules/@deepseek-ai'), join(scope, '@deepseek-ai'), 'junction');
-    const tap = await command(current, ['--test', '--test-name-pattern=^two OS processes with late raw writer',
+    const tap = await command(current, ['--test', '--test-reporter=tap', '--test-name-pattern=^two OS processes with late raw writer',
       join(repository, 'test/issue-27.mjs')], { root, cwd: workspace, env, timeout: 90000 });
     const checks = tap.split(/\r?\n/).filter((line) => /^ok \d+ - two OS processes with late raw writer.*finishes at 440/.test(line));
     assert.equal(checks.length, 2, 'real independent processes on the explicit root and its alias must finish at 440 bytes');

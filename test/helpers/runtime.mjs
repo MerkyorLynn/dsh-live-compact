@@ -3,15 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
-import { Session } from "@deepseek-ai/dsh-session";
+import { Session, SessionStore } from "@deepseek-ai/dsh-session";
 import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import Spine from "../../index.js";
 import { ENV } from "../../settings.js";
 import { resetShadowAccessState } from "../../shadow.js";
 
 let serial = 0;
-export function fixture({ totalTokens = 24000, id = `runtime-${++serial}`, longLast = false, long = {} } = {}) {
-  const session = Session.create(id);
+export function fixture({ totalTokens = 24000, id = `runtime-${++serial}`, session = Session.create(id), longLast = false, long = {} } = {}) {
   const prices = new Map();
   const f = { session, prices, rounds: [] };
   f.add = (type, data, tokens = 20, options = { surfaceOp: "append" }) => {
@@ -60,7 +59,7 @@ export function fixture({ totalTokens = 24000, id = `runtime-${++serial}`, longL
 
 // Real Context + engine + Session; only host I/O, token prices and model transport
 // are fixtures. Provider discovery must never inspect the user's profiles.
-export function runtime(t) {
+export function runtime(t, { liveSessions = false } = {}) {
   const keys = [...Object.values(ENV), "SPINE_SHADOW_DIR", "SPINE_THUNDER", "SPINE_ENGINE_FAIL",
     "SPINE_SHADOW_MAX_BYTES", "SPINE_SHADOW_MAX_MB"];
   const saved = new Map(keys.map((key) => [key, process.env[key]]));
@@ -75,7 +74,9 @@ export function runtime(t) {
     const ctx = new Context();
     contexts.push(ctx);
     ctx.logger = { info: (line) => h.infos.push(line), debug() {}, warn: (line) => h.warnings.push(line) };
-    ctx.sessions = { flush: async () => {} };
+    if (liveSessions) new SessionStore(ctx);
+    else ctx.sessions = {};
+    ctx.sessions.flush = async () => {};
     ctx.tokenMeter = { measure: (session) => fixtures.get(session).measure(), estimateMessage: () => 200 };
     ctx.llm = new Proxy({}, { get: () => () => { h.modelCalls++; throw new Error("model calls forbidden"); } });
     ctx.provide("toolResultPruner", { pruneSession() { h.pruneCalls++; } });

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from contract import (GROUPS, ROUNDS, MANIFEST, fingerprints, read_json, sha,
+from contract import (GROUPS, ROUNDS, MANIFEST, HERE, fingerprints, read_json, sha,
                       validate_contract, write_json)
 from mkfx import write_workspace
 from rubric import behavior
@@ -59,12 +59,20 @@ def validate_spec(spec):
     return spec
 
 
-def init_attempt(root, spec):
+def init_attempt(root, spec, registration=None):
     validate_spec(spec)
     frozen = fingerprints()
+    binding = None
+    if registration is not None:
+        from semantic import check_registration
+        binding = {'path': str(Path(registration).resolve()),
+                   'sha256': check_registration(registration, root, spec)}
+    elif spec['model'] != 'synthetic-only' or spec['route'] != 'offline-fake':
+        raise ValueError('live collection requires semantic preregistration before initialization')
     root.mkdir(parents=True, exist_ok=False)
     write_json(root / 'attempt.json', {'version': MANIFEST['version'], 'fingerprints': frozen,
                                      'spec': spec, 'created': time.time(),
+                                     'semantic_registration': binding,
                                      'groups': GROUPS, 'rounds': ROUNDS,
                                      'fill_per_cell': MANIFEST['fill_per_cell'],
                                      'python': sys.version, 'execution': 'serial within group; no automatic retry'})
@@ -153,6 +161,23 @@ def run_group(root, rid, executable='dsh', timeout=None):
     if (root / 'FAILED.json').exists() or (root / 'result.json').exists():
         raise ValueError('finished/failed attempt is immutable; start a new root')
     spec = validate_spec(run['spec'])
+    registration = run.get('semantic_registration')
+    if registration:
+        from semantic import check_registration
+        check_registration(registration['path'], root, spec, run)
+    else:
+        # The old offline CLI remains useful, but cannot launch a model by
+        # labeling a real invocation synthetic. Missing absolute executables
+        # still exercise the runner's spawn-error preservation path.
+        target = Path(executable)
+        offline = (spec['model'] == 'synthetic-only' and spec['route'] == 'offline-fake' and
+                   (target.resolve() == HERE / 'fake_dsh.py' or (target.is_absolute() and not target.exists())))
+        if not offline:
+            raise ValueError('unregistered attempt may execute only the local offline fake')
+    if registration:
+        from semantic import policy_at
+        if policy_at(registration['path'])[0]['mode'] == 'synthetic' and Path(executable).resolve() != HERE / 'fake_dsh.py':
+            raise ValueError('synthetic registration cannot launch a model')
     group = root / 'runs' / f'spine-{rid}'
     group.mkdir(exist_ok=False)
     cwd = root / 'work' / f'spine-{rid}'
@@ -170,7 +195,7 @@ def run_group(root, rid, executable='dsh', timeout=None):
                 env.pop(key)
     prompts = validate_contract()
     sid = None
-    errors, quality = [], []
+    errors, quality, hard_quality, fill_machine = [], [], [], []
     for item in prompts:
         turn = item['turn']
         prefix = group / f't{turn}'
@@ -193,7 +218,11 @@ def run_group(root, rid, executable='dsh', timeout=None):
             meta['projection_truncations'] = result['projection_truncations']
             meta['model_tool_errors'] = result['model_tool_errors']
             errors += result['evidence_errors']
-            quality += result['quality_errors'] + behavior(turn, result['calls'], snap, initial, cwd=cwd)
+            behavior_errors = behavior(turn, result['calls'], snap, initial, cwd=cwd)
+            quality += result['quality_errors'] + behavior_errors
+            hard_quality += result['tool_quality_errors'] + behavior_errors
+            if result['fill_machine']:
+                fill_machine.append(dict(turn=turn, **result['fill_machine']))
             sid = result['session_id']
         except (OSError, ValueError, KeyError, TypeError) as error:
             errors.append('parse/snapshot failure: ' + type(error).__name__)
@@ -214,6 +243,8 @@ def run_group(root, rid, executable='dsh', timeout=None):
             print(f'group {rid}, turn {turn}: infrastructure failure; attempt preserved', flush=True)
             return False
     write_json(group / 'result.json', {'evidence_pass': True, 'quality_errors': quality,
+                                      'tool_behavior_errors': hard_quality, 'fill_machine': fill_machine,
+                                      'provisional': True, 'semantic_verified': False, 'release_quality_pass': False,
                                       'answer_pass': not quality, 'session_id': sid})
     return True
 
@@ -221,7 +252,7 @@ def run_group(root, rid, executable='dsh', timeout=None):
 def finish(root):
     result = score_cell(root)
     write_json(root / 'result.json', result)
-    print(json.dumps({k: result[k] for k in ('gate_pass', 'complete_turns', 'planned_turns', 'fill_correct', 'planned_fill')}))
+    print(json.dumps({k: result[k] for k in ('gate_pass', 'provisional', 'release_quality_pass', 'complete_turns', 'planned_turns', 'fill_correct', 'planned_fill')}))
     return 0 if result['gate_pass'] else 1
 
 
@@ -230,6 +261,7 @@ def main():
     parser.add_argument('action', choices=('init', 'group', 'all', 'finish'))
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--spec', type=Path)
+    parser.add_argument('--preregistration', type=Path, help='frozen semantic registration required for live collection')
     parser.add_argument('--group', type=int)
     parser.add_argument('--dsh', default='dsh', help='explicit executable; offline tests pass fake_dsh.py')
     args = parser.parse_args()
@@ -240,7 +272,7 @@ def main():
         if args.action in ('init', 'all'):
             if not args.spec:
                 raise ValueError('--spec is required')
-            init_attempt(root, read_json(args.spec))
+            init_attempt(root, read_json(args.spec), args.preregistration)
         if args.action == 'init':
             return 0
         if args.action == 'group':

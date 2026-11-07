@@ -1,16 +1,16 @@
 // cooldown.js — 「某类系统事件刚发生过，先让一让」的通用判定
 //
 // 【为什么单独成文件】
-// 这个判断与压缩引擎、卡片格式、切块选择都无关，只有两个输入：会话的只读节点表 + 一个
-// `source.kind` 字符串。放成独立文件后：
+// 这个判断与压缩引擎、卡片格式、切块选择无关，只读取会话节点、恢复边界和
+// `source.kind`。放成独立文件后：
 //   · 调用方（index.js）只加一行判定，不碰任何既有逻辑
-//   · 整份文件可以原样复制到别的项目（不认识压缩、不 import 宿主包、无全局状态）
+//   · 不 import 宿主包；只有一次性跳过 helper 共享 Session 弱引用记录，以支持热重载
 //
 // 【两个判据，主判据是「这条官方卡片处理过没有」】
 // 只看时间窗口会漏掉一种真实情形：官方压缩后长时间没消息（比如一小时），再来消息时
 // 窗口早过了，spine 立刻切——而那正是要挡的一刀（官方摘要还在 surface 里，容易被卷走）。
-// 所以主判据用 seq：每出现一条**新的**官方卡片，调用方就跳过一次动作并记住该 seq；
-// 同一条卡片只跳一次，不会永久压制。
+// 所以主判据用 seq：每出现一条实时的新官方卡片，就跳过一次动作并记住该 seq；
+// 恢复边界之前的历史卡片只建立基线，不再跳过。同一条实时卡片只跳一次。
 // 时间窗口作为可选的额外兜底（`SPINE_COOLDOWN_MS`，默认 0 = 只用 seq 语义），
 // 用于「压缩后短时间内反复 idle」的场景。
 // 两者都不引入轮次概念——轮次要定义「什么算一轮」「中断算不算」，成本高且难测。
@@ -20,6 +20,22 @@ export const DEFAULT_COOLDOWN_MS = 300000;
 
 /** 官方压缩卡片使用的 `source.kind`（宿主契约字段，不是文本标记）。 */
 export const OFFICIAL_COMPACTION_KIND = "compact-checkpoint";
+
+// Session identity survives engine/preset replacement, LRU eviction and module
+// hot reload. Weak keys retain no completed Session, and nothing is persisted.
+const seenKey = Symbol.for("dsh-live-compact.official-compaction-seen");
+const officialSeen = globalThis[seenKey] ??= new WeakMap();
+
+export function skipLiveOfficialCompaction(session) {
+  const seq = lastSourceKindSeq(session, OFFICIAL_COMPACTION_KIND);
+  if (seq === undefined || officialSeen.get(session) === seq) return false;
+  officialSeen.set(session, seq);
+  const boundary = session.firstLiveSeq;
+  // Older hosts without a valid lifecycle boundary keep once-per-card
+  // behavior. Never infer history from timestamps or captureNew replay.
+  const knownBoundary = Number.isSafeInteger(boundary) && boundary >= 0;
+  return !knownBoundary || seq >= boundary;
+}
 
 /**
  * 解析冷却窗口配置。

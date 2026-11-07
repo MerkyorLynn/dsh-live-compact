@@ -705,12 +705,15 @@ check("p0-15 source has no SPINE_MAX_TOKENS", () => {
 });
 
 check("p0-15 bigGate stays 650000 with SPINE_MAX_TOKENS=1", () => {
-  const moduleURL = new URL("../settings.js", import.meta.url).href;
   const output = execFileSync(process.execPath, [
     "--input-type=module",
     "--eval",
-    `const { DEFAULTS } = await import(${JSON.stringify(moduleURL)}); process.stdout.write(String(DEFAULTS.bigGate));`,
+    `import Engine, { BIG_GATE } from "dsh-live-compact/engine";
+     import { DEFAULTS } from "./settings.js";
+     if (typeof Engine !== "function" || BIG_GATE !== DEFAULTS.bigGate) throw new Error("engine export contract");
+     process.stdout.write(String(BIG_GATE));`,
   ], {
+    cwd: packageRoot,
     encoding: "utf8",
     env: { ...process.env, SPINE_MAX_TOKENS: "1" },
   });

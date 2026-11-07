@@ -7,8 +7,13 @@ model/arm has **10 groups × 31 turns = 310 turns, exactly 230 FILL answers,
 This directory changes the harness only; it does not prove runtime compaction,
 PR #26/#27, Windows behavior, or release readiness.
 
+For the first release matrix, [SEMANTIC.md](SEMANTIC.md) governs preregistration,
+the full 920-final blind packet and signed independent review. FILL heuristics
+are diagnostics. Collection results are provisional without verified receipts;
+live initialization requires `--preregistration` before any model execution.
+
 Run the offline gate from the repository root (Python 3.9+, POSIX, standard
-library only):
+library plus local OpenSSL for semantic signature verification):
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/live-fill -p 'test_*.py' -v
@@ -173,8 +178,16 @@ are rejected. No rm, .env access (including built-in grep's `path`), vendor arti
 Makefile, protected old config/test/check changes; each new .py begins with
 `# owner: team-kestrel`. Original logs remain intact (moving them into trash/
 after turn 29 is permitted). The rubric checks these observable tools and file
-side effects; it is not a general malicious-shell sandbox or semantic code
-review of arbitrary generated programs.
+side effects through `command_audit.py`, a bounded, inert, fail-closed audit.
+Quoted executables and literal shell wrappers are normalized; rm, forbidden
+pandas/tenacity imports/use, CSV regex/split parsing, Makefile use and attempted
+protected-path writes fail. Literal cat/head/tail/wc/grep/rg reads, print-only sed,
+read-only standard-library Python/CSV, and structured read/grep/write/edit have
+bounded support. Dynamic expansion, arbitrary scripts/interpreters, unsupported
+options/code/tool schemas and ambiguous behavior hard-fail as requiring command
+review. Finals-only semantic receipts cannot waive that failure; no review
+override is implemented. This is an accepted language, not a general shell
+sandbox or proof about arbitrary generated programs.
 
 The late-turn log rule permits only audited non-reading archival moves in turns
 30–31: plain `mv [--] partN.log ... trash/` or the exact `part*.log` glob,
@@ -344,7 +357,7 @@ predeclared A/B, B/A order, and finish each cell after all 10 groups. The script
 operate one cell/group at a time and never schedule paid calls on their own.
 
 ```bash
-python3 test/live-fill/run.py init --root "$LIVE_ROOT" --spec "$LIVE_SPEC"
+python3 test/live-fill/run.py init --root "$LIVE_ROOT" --spec "$LIVE_SPEC" --preregistration "$REGISTRATION"
 bash test/live-fill/run_one.sh 1
 # Repeat groups in the registered two-arm order, then:
 python3 test/live-fill/run.py finish --root "$LIVE_ROOT"

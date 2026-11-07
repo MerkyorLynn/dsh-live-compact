@@ -8,7 +8,7 @@
  * 小切在轮次结束后做，不调模型。最近 3 个已结束的工具轮留在原处。
  * 切法和 1.0.6 一样：不越过用户消息。不够 1000 token 就跳过，不回头凑。
  * 超过 65 万停掉小切，交给官方大压缩。
- * The small cut runs after the turn, with no model call. It does not cross a user
+ * The small cut runs after the turn, with no model call. It does not cross a genuine user
  * message. Under 1000 tokens, skip. Do not walk back to manufacture a cut.
  * Above 650000, small cuts stop for the host gate.
  */
@@ -39,7 +39,7 @@ import {
   withShadowRoot,
 } from "./shadow.js";
 import { buildSendLess, decideThunder } from "./thunder.js";
-import { OFFICIAL_COMPACTION_KIND, inCooldown, lastSourceKindSeq } from "./cooldown.js";
+import { inCooldown, skipLiveOfficialCompaction } from "./cooldown.js";
 
 const { BasicCompactionEngine } = await loadBase();
 const { CompactionId, toolPairingBalancedAfter, toolPairingBalancedBefore } = await loadCompaction();
@@ -90,8 +90,26 @@ function eventRole(session, seq) {
   return "other";
 }
 
-function isUser(session, seq) {
-  return session.eventAt(seq)?.type === "user/message";
+// progress-rules 0.2.1's pre-step contract, not a general notice permission.
+// Session source metadata does not authenticate producer identity. Unknown/extra metadata
+// stays a boundary; neither body text nor the raw role is used as a substitute.
+function classifyUserEvent(session, seq) {
+  const event = session.eventAt(seq);
+  const data = event?.data;
+  const source = data?.source;
+  const content = data?.content;
+  const pluginNotice = event?.type === "user/message" && !isCheckpoint(session, seq)
+    && data?.role === "user"
+    && typeof data.id === "string" && data.id.length > 0
+    && !Object.hasOwn(event, "source")
+    && Object.keys(data).every((key) => ["id", "role", "content", "source"].includes(key))
+    && source?.kind === "progress-rules" && source.form === "notice"
+    && source.summary === "过程纪律：要求正文通报"
+    && Object.keys(source).length === 3
+    && Array.isArray(content) && content.length === 1
+    && content[0]?.type === "text" && typeof content[0].text === "string"
+    && Object.keys(content[0]).length === 2;
+  return { pluginNotice, isGenuineUserBoundary: event?.type === "user/message" && !pluginNotice };
 }
 
 function cutOk(fn, session, seq) {
@@ -230,7 +248,7 @@ export { saveShadowImpl as saveShadow };
 
 // 从后往前选一刀，和 1.0.6 一样。不越过用户消息。工具对必须成对。
 // 最近 settings.keepRounds 个已结束的工具轮留在原处。不够 settings.chunkMin 就返回 null。
-// Pick one span from the tail, as in 1.0.6. Do not cross a user message.
+// Pick one span from the tail, as in 1.0.6. Do not cross a genuine user message.
 // Tool pairs stay balanced. The newest settings.keepRounds finished rounds stay verbatim.
 // Under settings.chunkMin, return null.
 function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}) {
@@ -240,6 +258,7 @@ function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}
   const nodes = session.surface.nodes;
   const priced = measurement.nodes;
   if (nodes.length === 0 || nodes.length !== priced.length) return null;
+  const classifications = nodes.map((seq) => classifyUserEvent(session, seq));
   const first = session.eventAt(nodes[0])?.type === "system/message" ? 1 : 0;
   let end = priced.length - 1;
   let floorCard = -1;
@@ -280,7 +299,7 @@ function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}
     const keptEnd = visible[span.end].index;
     for (let index = visible[span.start].index; index <= keptEnd; index += 1) keptTokens += priced[index].tokens;
     end = cutEnd;
-    while (end >= first && isUser(session, nodes[end]) && !(floorCard >= 0 && end - 1 <= floorCard)) end -= 1;
+    while (end >= first && classifications[end].isGenuineUserBoundary && !(floorCard >= 0 && end - 1 <= floorCard)) end -= 1;
     if (floorCard >= 0 && end <= floorCard) return null;
     if (isCheckpoint(session, nodes[end])) return null;
     while (end >= first && !cutOk(toolPairingBalancedAfter, session, nodes[end])) {
@@ -313,6 +332,8 @@ function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}
       const text = excerpt.text;
       pieces.push({
         role: eventRole(session, nodes[index]),
+        source: event?.data?.source,
+        ...classifications[index],
         text,
         isError: Boolean(event?.data?.message?.isError || event?.data?.isError),
         command: call?.command || (event?.type === "tool/result" ? pendingCommand : ""),
@@ -346,6 +367,7 @@ function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}
       : event?.type === "system/message" ? "system" : "other";
     return {
       type,
+      ...classifications[index],
       tokens: priced[index].tokens,
       checkpoint: isCheckpoint(session, seq),
       balancedBefore: cutOk(toolPairingBalancedBefore, session, seq),
@@ -413,6 +435,7 @@ function selectNewestChunk(session, measurement, key = DEFAULT_KEY, context = {}
   return { start: nodes[start], end: nodes[end], tokens, after, keptTokens, card, prefix };
 }
 
+export const BIG_GATE = DEFAULTS.bigGate;
 export { isCheckpoint, planMessages, spineCheckpointSource };
 
 // 只换「切哪一段、怎么换成卡片」。官方大门仍由宿主算。
@@ -524,12 +547,10 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
         const op = AbortSignal.any([agentSignal, signal]);
         let measurement = this.ctx.tokenMeter.measure(agent.session);
         if (measurement.totalTokens < settings.minTokens || measurement.totalTokens >= settings.bigGate) return;
-        // 官方压缩后的第一次 idle 先让一让，免得紧接着又把它产出的摘要卷走。
-        // 主判据是「这条官方卡片处理过没有」（与实际间隔多久无关），时间窗口只作可选兜底。
-        const officialSeq = lastSourceKindSeq(agent.session, OFFICIAL_COMPACTION_KIND);
-        if (officialSeq !== undefined && state.cooldownSeenSeq !== officialSeq) {
-          state.cooldownSeenSeq = officialSeq;
-          this.ctx.logger?.info?.(`spine cooldown: official compaction ${officialSeq} seen, skip this pass`);
+        // Restored cards establish a baseline; a live card still skips once,
+        // even when maintenance or engine construction is delayed.
+        if (skipLiveOfficialCompaction(agent.session)) {
+          this.ctx.logger?.info?.("spine cooldown: live official compaction seen, skip this pass");
           return;
         }
         if (inCooldown(agent.session, { windowMs: settings.cooldownMs })) return;
@@ -710,10 +731,8 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
     return super.compactIfNeeded(agent, trigger, signal);
   }
 
-  // 请求头往往只有 provider。目录和官方 DeepSeek 之后，再读当前配置里的 baseURL。
-  // 读不到地址仍按本地，避免没配地址的会话被当成云端去改前缀。
-  // Headers often carry only the provider. After the catalog and official DeepSeek, read the live profile URL.
-  // No URL still means local, so an unconfigured session is not rewritten as cloud.
+  // Preserve explicit URL precedence. Only the exact account provider gets
+  // its root settings / launch environment sources and a no-address fallback.
   engineFor(agent) {
     const header = agent?.session?.requestHeader?.()?.config || {};
     const context = agent?.session?.requestContext?.() || {};
@@ -724,7 +743,9 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
       headerURL: header.baseURL || context.baseURL || "",
       listed,
       layers: this.providerLayers(),
+      directory: this.configurableProviders(provider),
       patchText: this.profilePatchText(),
+      launchURL: this.accountLaunchURL(provider),
       catalog: this.catalogProviders(),
     });
     return resolveEngine({ provider, baseURL });
@@ -753,9 +774,31 @@ export default class SpineCompactionEngine extends BasicCompactionEngine {
   providerLayers() {
     try {
       const rows = this.hostService("configEditor")?.configuration?.() || [];
-      return rows.map((row) => ({ override: row?.override, inherited: row?.inherited }));
+      return rows.map((row) => ({ settingsNs: row?.entry?.options?.id, override: row?.override, inherited: row?.inherited }));
     } catch {
       return [];
+    }
+  }
+
+  configurableProviders(provider) {
+    if (provider !== "deepseek-account") return [];
+    try {
+      const llm = this.ctx.llm || this.hostService("llm");
+      return llm?.listConfigurableProviders?.() || [];
+    } catch {
+      return [];
+    }
+  }
+
+  accountLaunchURL(provider) {
+    if (provider !== "deepseek-account") return "";
+    try {
+      const environment = this.hostService("launchEnvironment");
+      // Match launchEnvironmentOf: process env applies only without a snapshot.
+      return environment ? environment.get("DEEPSEEK_BASE_URL")?.value ?? "" : process.env.DEEPSEEK_BASE_URL ?? "";
+    } catch {
+      // Unreadable is not evidence of absence. Keep the decision conservative.
+      return " ";
     }
   }
 

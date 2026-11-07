@@ -48,8 +48,8 @@ def spec(root, arm='candidate', family='ds'):
                 parameters={'temperature':0, 'window':1000000, 'tools':'read,bash,write'},
                 cache_warmup='none; first group cold; no prewarm requests',
                 usage_semantics='disjoint-input-read-write', package_sha256='0'*64,
-                dsh_home=str(root.parent / (arm+'-home')), profile=arm+'-synthetic',
-                shadow_dir=str(root.parent / (arm+'-shadow')))
+                dsh_home=str(root.parent / (family+'-'+arm+'-home')), profile=family+'-'+arm+'-synthetic',
+                shadow_dir=str(root.parent / (family+'-'+arm+'-shadow')))
 
 
 def usage(second=False):

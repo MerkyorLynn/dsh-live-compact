@@ -220,6 +220,7 @@ def parse_turn(path, turn, cwd, expected_sid=None):
         bad.append('missing tool result')
     expected = Path(cwd) / f'part{turn}.log'
     read_ok = False
+    fill_errors = []
     if turn in FILL:
         fixture, _ = build_log(turn)
         fixture_lines = fixture.splitlines()
@@ -253,7 +254,7 @@ def parse_turn(path, turn, cwd, expected_sid=None):
                         read_ok = True
         if not read_ok:
             bad.append('no successful correlated read of expected file')
-        quality += fill_answer(final or '', turn)
+        fill_errors = fill_answer(final or '', turn)
     if turn == 1:
         check_pairs = [(c, r) for c, r in pairs.values() if c['tool'] == 'bash'
                        and same_path(c['input'].get('workdir', str(cwd)), cwd, cwd)
@@ -271,12 +272,21 @@ def parse_turn(path, turn, cwd, expected_sid=None):
             quality.append('turn 1 did not report exact check failure')
     if turn == 28:
         quality += fields(final or '', 'recall')
+    # Legacy quality_errors stays available to callers. It is never a semantic
+    # verdict: arbitrary extra prose can escape (or confuse) this heuristic.
+    canonical = (f'WARN: {3 + turn % 9}\n' + (MANIFEST['notices'].get(str(turn)) or 'NONE'))
+    fill_machine = dict(status='RECOGNIZED' if final == canonical else 'REVIEW',
+                        errors=fill_errors,
+                        warn=dict(errors=[x for x in fill_errors if 'WARN' in x]),
+                        notice=dict(errors=[x for x in fill_errors if 'NOTICE' in x]),
+                        semantic_verdict=None) if turn in FILL else None
     return dict(session_id=sid, final=final, calls=calls, usage=usages, reason=reason,
                 usage_zero_proofs=usage_zero_proofs,
-                evidence_errors=bad, quality_errors=quality, expected_read=read_ok,
+                evidence_errors=bad, quality_errors=quality + fill_errors,
+                tool_quality_errors=list(quality), fill_machine=fill_machine, expected_read=read_ok,
                 first_step_usage=first_step_usage, last_step_usage=last_step_usage,
-                warn_correct=turn in FILL and not any('WARN' in x or 'ambiguous' in x for x in quality),
-                notice_correct=turn in FILL and not any('NOTICE' in x or 'ambiguous' in x for x in quality),
+                warn_correct=turn in FILL and not any('WARN' in x for x in fill_errors),
+                notice_correct=turn in FILL and not any('NOTICE' in x for x in fill_errors),
                 projection_truncations=projection_truncations,
                 model_tool_errors=model_tool_errors,
                 request_finish_reason=None, transport_retries=None)
@@ -335,7 +345,7 @@ def ratios(usages):
     return totals
 
 
-def score_cell(root):
+def score_cell(root, *, review_sources=False):
     validate_contract()
     run = read_json(root / 'attempt.json')
     if run.get('fingerprints') != fingerprints() or run.get('version') != MANIFEST['version']:
@@ -349,7 +359,9 @@ def score_cell(root):
                   planned_turns=GROUPS * ROUNDS, planned_fill=MANIFEST['fill_per_cell'],
                   complete_turns=0, fill_correct=0, expected_reads=0,
                   fill_complete=0, warn_correct=0, notice_correct=0, projection_truncations=0, model_tool_errors=0,
-                  evidence_errors=[], quality_errors=[], groups=[], usage_zero_proofs=[], fingerprints=run['fingerprints'],
+                  evidence_errors=[], quality_errors=[], tool_behavior_errors=[], fill_machine_errors=[],
+                  fill_results=[], groups=[], usage_zero_proofs=[], fingerprints=run['fingerprints'],
+                  semantic_verified=False, provisional=True, release_quality_pass=False,
                   observability={'request_finish_reason':'not emitted by rc.2 JSON',
                                  'transport_retries':'not emitted; stderr diagnostics detected, silent retries unknown',
                                  'post_cut_first_request':'not observable in JSON; separate cut/request trace required',
@@ -397,13 +409,24 @@ def score_cell(root):
                     if sid in seen_sessions:
                         result['evidence_errors'].append('session reused across groups')
                     seen_sessions.add(sid)
-                result['quality_errors'] += behavior(turn, result['calls'], snapshot, initial, cwd=cwd)
+                behavior_errors = behavior(turn, result['calls'], snapshot, initial, cwd=cwd)
+                result['quality_errors'] += behavior_errors
+                hard_quality = result['tool_quality_errors'] + behavior_errors
+                report['tool_behavior_errors'] += [tag + ': ' + x for x in hard_quality]
                 if not result['evidence_errors']:
                     report['complete_turns'] += 1
                     gr['complete_turns'] += 1
                 report['evidence_errors'] += [tag + ': ' + x for x in result['evidence_errors']]
                 report['quality_errors'] += [tag + ': ' + x for x in result['quality_errors']]
                 if turn in FILL:
+                    report['fill_machine_errors'] += [tag + ': ' + x for x in result['fill_machine']['errors']]
+                    case = dict(group=rid, turn=turn, final_sha256=sha(result['final'].encode('utf-8')),
+                                evidence_errors=list(result['evidence_errors']),
+                                tool_behavior_errors=hard_quality, machine=result['fill_machine'],
+                                warn={'verdict': None}, notice={'verdict': None})
+                    if review_sources:
+                        case['final'] = result['final']
+                    report['fill_results'].append(case)
                     report['expected_reads'] += int(result['expected_read'])
                     report['fill_complete'] += int(not result['evidence_errors'])
                     report['warn_correct'] += int(result['warn_correct'] and not result['evidence_errors'])
@@ -429,6 +452,7 @@ def score_cell(root):
     report['metrics_partial'] = report['complete_turns'] != GROUPS * ROUNDS or bool(report['evidence_errors'])
     report['evidence_pass'] = not report['evidence_errors'] and report['complete_turns'] == GROUPS * ROUNDS
     report['answer_pass'] = report['fill_correct'] == MANIFEST['fill_per_cell'] and not report['quality_errors']
+    report['hard_quality_pass'] = not report['tool_behavior_errors']
     report['gate_pass'] = report['evidence_pass'] and (spec['arm'] == 'stock' or report['answer_pass'])
     report['cache_release_pass'] = False  # A cell alone never establishes comparability.
     elapsed = [g['ended'] - g['started'] for g in report['groups'] if g['started'] is not None and g['ended'] is not None]
@@ -440,6 +464,21 @@ def score_cell(root):
     return report
 
 
+COMPARABLE_SPEC_KEYS = ('model_family', 'model', 'route', 'host', 'dependencies', 'parameters',
+                        'cache_warmup', 'usage_semantics', 'package_sha256')
+ISOLATED_SPEC_KEYS = ('dsh_home', 'profile', 'shadow_dir')
+
+
+def spec_comparison_errors(candidate, stock):
+    """Static paired requirements, shared by preregistration and final scoring."""
+    errors = ['noncomparable ' + key for key in COMPARABLE_SPEC_KEYS
+              if candidate.get(key) != stock.get(key)]
+    for key in ISOLATED_SPEC_KEYS:
+        if candidate.get(key) == stock.get(key):
+            errors.append('shared ' + key)
+    return errors
+
+
 def compare(candidate, stock):
     """Prerecorded budgets. Never turn unmatched/historical input into release proof."""
     errors = []
@@ -448,18 +487,13 @@ def compare(candidate, stock):
     for report in (candidate, stock):
         if not report['evidence_pass'] or report['planned_turns'] != 310 or report['planned_fill'] != 230:
             errors.append('incomplete evidence cannot be compared')
-    if not candidate['answer_pass']:
+    if not (candidate['release_quality_pass'] if candidate.get('semantic_verified') else candidate['answer_pass']):
         errors.append('candidate quality failed')
-    for key in ('model_family', 'model', 'route', 'host', 'dependencies', 'parameters', 'cache_warmup', 'usage_semantics', 'package_sha256'):
-        if candidate['spec'].get(key) != stock['spec'].get(key):
-            errors.append('noncomparable ' + key)
+    errors += spec_comparison_errors(candidate['spec'], stock['spec'])
     if candidate['fingerprints'] != stock['fingerprints']:
         errors.append('different harness')
     if candidate['spec'].get('usage_semantics') != 'disjoint-input-read-write':
         errors.append('unknown usage semantics')
-    for key in ('dsh_home', 'profile', 'shadow_dir'):
-        if candidate['spec'].get(key) == stock['spec'].get(key):
-            errors.append('shared ' + key)
     for cg, sg, order in zip(candidate['groups'], stock['groups'], MANIFEST['cache']['group_order']):
         a, b = (cg, sg) if order == 'candidate,stock' else (sg, cg)
         if a['ended'] is None or b['started'] is None or a['ended'] > b['started']:
@@ -482,7 +516,12 @@ def compare(candidate, stock):
         errors.append('uncached input cost regression/unknown')
     # The projection cannot establish these claims. They are separate runtime
     # release evidence, never fabricated zero counters or a default PASS here.
+    verified = all(r.get('semantic_verified') and not r.get('provisional', True) for r in (candidate, stock))
     return dict(cache_comparison_pass=not errors, errors=errors,
+                provisional=not verified,
+                semantic_verified=verified,
+                semantic_review_errors=[] if verified else ['verified full-matrix semantic receipts required'],
+                matched_collection_pass=verified and not errors and all(r['hard_quality_pass'] for r in (candidate, stock)),
                 cache_release_pass=False,
                 usage_metrics={report['arm']: {section: report[section] for section in ('first_step', 'all_steps')}
                                for report in (candidate, stock)},
@@ -502,13 +541,14 @@ def main():
         ok = report['gate_pass']
         if args.stock_root:
             report = compare(report, score_cell(args.stock_root.resolve()))
-            ok = report['cache_comparison_pass']
+            ok = report['matched_collection_pass']
         if args.output:
             write_json(args.output, report)
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if ok else 1
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(json.dumps({'gate_pass':False, 'error':type(error).__name__ + ': ' + str(error)}))
+        print(json.dumps({'gate_pass':False, 'provisional':True, 'release_quality_pass':False,
+                          'error':type(error).__name__ + ': ' + str(error)}))
         return 1
 
 

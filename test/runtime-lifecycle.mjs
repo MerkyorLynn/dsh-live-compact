@@ -7,6 +7,7 @@ import { BasicCompactionEngine } from "@deepseek-ai/dsh-compaction-basic";
 import { toolPairingBalancedAfter, toolPairingBalancedBefore } from "@deepseek-ai/dsh-compaction";
 import { Session } from "@deepseek-ai/dsh-session";
 import { contentHash, pointerFor } from "../raw.js";
+import { skipLiveOfficialCompaction } from "../cooldown.js";
 import { messageText } from "../plan.js";
 import { resetShadowAccessState, sessionDir } from "../shadow.js";
 import { fixture, runtime } from "./helpers/runtime.mjs";
@@ -117,17 +118,14 @@ test("stock → spine → stock uses genuine transactions; cooldown is once per 
   f.session = Session.create(f.session.id, JSON.parse(JSON.stringify(f.session.snapshotEvents())));
   h.use(f);
   const restarted = h.engine().engine;
-  const restartHash = eventHash(f);
   await restarted.finishTurn(f.agent());
-  assert.equal(eventHash(f), restartHash, "a fresh engine safely skips the visible official checkpoint once again");
-  await restarted.finishTurn(f.agent());
-  assert.deepEqual(f.summaries().at(-1).data.shadowedSeqs, newer);
+  assert.deepEqual(f.summaries().at(-1).data.shadowedSeqs, newer, "restored official history must not consume the first maintenance");
   const other = h.use(fixture());
   await stock.compactNow(other.agent(), new AbortController().signal);
   const otherHash = eventHash(other);
   await spine.finishTurn(other.agent());
   assert.equal(eventHash(other), otherHash);
-  assert.equal(spine.stateFor(other.agent()).cooldownSeenSeq, checkpoints(other, "compact-checkpoint")[0]);
+  assert.equal(skipLiveOfficialCompaction(other.session), false, "the live official card was consumed for this Session");
   // Real stock selection may include spine checkpoints. Do not promise otherwise.
   const result = await stock.compactNow(f.agent(), new AbortController().signal);
   assert.ok(result.shadowedSeqs.includes(spineCard));
@@ -137,7 +135,7 @@ test("stock → spine → stock uses genuine transactions; cooldown is once per 
   const afterStock = eventHash(f);
   await restarted.finishTurn(f.agent());
   assert.equal(eventHash(f), afterStock);
-  assert.equal(restarted.stateFor(f.agent()).cooldownSeenSeq, newOfficial);
+  assert.equal(skipLiveOfficialCompaction(f.session), false, "the second stock card was consumed independently");
 });
 
 test("a recognized tool fact survives a real cut; assistant publish prose never becomes execution evidence (#6/#14)", async (t) => {

@@ -43,6 +43,14 @@ try {
     $version = $app.VersionInfo.ProductVersion
     # PE version metadata is numeric; the signed installer digest pins the prerelease.
     if ($version -notmatch '^0\.2\.2(?:\.0|-rc\.1)?$') { throw "Unexpected Desktop executable version $version." }
+    $folders = [pscustomobject]@{
+        HasProfile = Test-Path -LiteralPath ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))
+        ProfileEnvMatches = $env:USERPROFILE -eq [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        LocalAppDataEnvMatches = $env:LOCALAPPDATA -eq [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        AppDataEnvMatches = $env:APPDATA -eq [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+        HasAppAsar = Test-Path -LiteralPath (Join-Path $app.DirectoryName 'resources\app.asar')
+    }
+    $folders | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'desktop-env-proof.json')
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
     $listener.Start()
     $port = $listener.LocalEndpoint.Port

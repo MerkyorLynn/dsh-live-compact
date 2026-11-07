@@ -19,6 +19,13 @@ foreach ($child in $children) {
     $types[$type] = 1 + [int]$types[$type]
 }
 [pscustomobject]@{ ControlCount = $children.Count; ControlTypes = $types } | ConvertTo-Json -Compress | Write-Output
+if ($root.ClassName -eq '#32770') {
+    $messages = @($children | Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Text' } | ForEach-Object {
+        $message = $_.Current.Name
+        if ($message) { $message.Substring(0, [Math]::Min($message.Length, 1600)) }
+    })
+    [pscustomobject]@{ StartupDialogMessages = $messages } | ConvertTo-Json -Compress | Write-Output
+}
 if ($children.Count -lt 2 -or (-not $types['ControlType.Document'] -and -not $types['ControlType.Button'])) {
     throw 'No accessible application controls in the official Desktop window.'
 }

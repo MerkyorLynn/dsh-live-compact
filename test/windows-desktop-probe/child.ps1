@@ -90,15 +90,23 @@ try {
     } until ($page -or [DateTime]::UtcNow -gt $deadline)
     if ($page) {
         $renderer = $null
-        for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        for ($attempt = 0; $attempt -lt 10; $attempt++) {
             $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2
             $renderer = @($targets | Where-Object { $_.type -eq 'page' -and $_.webSocketDebuggerUrl } | Select-Object -First 5 | ForEach-Object {
                 & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $_.webSocketDebuggerUrl -Port $port | ConvertFrom-Json
             })
-            if (@($renderer | Where-Object { $_.buttons.Count -gt 0 }).Count -gt 0) { break }
+            if (@($renderer | Where-Object { $_.protocol -eq 'dsh-app:' -and $_.buttons -contains 'Plugins' }).Count -gt 0) { break }
             Start-Sleep -Seconds 4
         }
         ConvertTo-Json -InputObject $renderer -Compress -Depth 5 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'cdp-proof.json')
+        foreach ($target in @($targets | Where-Object { $_.type -eq 'page' -and $_.url -like 'dsh-app:*' -and $_.webSocketDebuggerUrl })) {
+            if (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port -OpenPluginManager) {
+                Start-Sleep -Seconds 3
+                & (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $target.webSocketDebuggerUrl -Port $port |
+                    Set-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-manager-proof.json')
+                break
+            }
+        }
     }
     $process.Refresh()
     $automation = $false

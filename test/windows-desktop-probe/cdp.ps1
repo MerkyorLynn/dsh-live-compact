@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port)
+param([Parameter(Mandatory)][uri]$Endpoint, [Parameter(Mandatory)][int]$Port, [switch]$OpenPluginManager)
 $ErrorActionPreference = 'Stop'
 if ($Endpoint.Scheme -ne 'ws' -or $Endpoint.Host -ne '127.0.0.1' -or $Endpoint.Port -ne $Port) {
     throw 'CDP must stay on the test application loopback port.'
@@ -21,6 +21,18 @@ JSON.stringify({
     .filter(Boolean).slice(0, 35)
 })
 '@
+    if ($OpenPluginManager) {
+        $expression = @'
+(() => {
+  if (location.protocol !== 'dsh-app:') return false;
+  const entry = [...document.querySelectorAll('button, [role="button"]')].find(el =>
+    el.getClientRects().length && (el.getAttribute('aria-label') || el.title || el.textContent || '').trim() === 'Plugins');
+  if (!entry) return false;
+  entry.click();
+  return true;
+})()
+'@
+    }
     $command = @{ id=1; method='Runtime.evaluate'; params=@{ expression=$expression; returnByValue=$true } } | ConvertTo-Json -Compress -Depth 5
     $packet = [ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($command))
     $socket.SendAsync($packet, [Net.WebSockets.WebSocketMessageType]::Text, $true, $deadline.Token).GetAwaiter().GetResult() | Out-Null
@@ -38,7 +50,7 @@ JSON.stringify({
             $response = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
         } finally { $message.Dispose() }
     } until ($response.id -eq 1)
-    if (-not $response.result.result.value) { throw 'CDP returned no page evidence.' }
+    if ($null -eq $response.result.result.value) { throw 'CDP returned no page evidence.' }
     $response.result.result.value
 } finally {
     $deadline.Dispose()

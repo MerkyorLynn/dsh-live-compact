@@ -4,6 +4,7 @@ import { configSnapshot, engineConfig } from "./settings.js";
 
 const OURS = "dsh-live-compact";
 const PRESET_IDS = new Set(["standard", "ptc", "minimal", "cordis", "preset-standard", "preset-ptc", "preset-minimal", "preset-cordis"]);
+export const GATE_SERVICE = "liveCompactPresetGate";
 export const PRESET_ENGINE_CONFIG = Object.freeze(engineConfig());
 
 const require = createRequire(import.meta.url);

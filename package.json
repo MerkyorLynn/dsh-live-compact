@@ -41,7 +41,7 @@
     "compaction"
   ],
   "scripts": {
-    "test:gate": "node test/p0-gate.mjs && node test/p0-blockers.mjs && node --test test/cooldown.test.mjs test/gate-config.test.mjs test/drain-stopline.mjs test/scan-once.mjs test/issue-19.mjs test/issue-20.mjs test/windows-acl.test.mjs test/issue-27.mjs test/issue-29.mjs test/issue-29-notice.mjs test/client-settings.test.mjs test/settings-integration.test.mjs test/runtime-lifecycle.mjs test/shadow-lifecycle.mjs test/finalize-over-32000.mjs",
+    "test:gate": "node test/p0-gate.mjs && node test/p0-blockers.mjs && node --test test/public-exports.test.mjs test/cooldown.test.mjs test/gate-config.test.mjs test/drain-stopline.mjs test/scan-once.mjs test/issue-19.mjs test/issue-20.mjs test/windows-acl.test.mjs test/issue-27.mjs test/issue-29.mjs test/issue-29-notice.mjs test/client-settings.test.mjs test/settings-integration.test.mjs test/runtime-lifecycle.mjs test/shadow-lifecycle.mjs test/finalize-over-32000.mjs",
     "test:live-gate": "python3 -B -m unittest discover -s test/live-fill -p test_*.py"
   },
   "engines": {

@@ -233,6 +233,24 @@ class SemanticTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify(self.policy, self.packet, self.mapping, self.receipts)
 
+    def test_turn14_audit_failures_remain_nonwaivable_with_complete_receipts(self):
+        path = self.roots['ds/candidate'] / 'runs/spine-1/t14.jsonl'
+        original = [json.loads(x) for x in path.read_text().splitlines()]
+        for command in (
+                "mkdir -p audit-bin; cp /bin/rm audit-bin/cat; printf -v PATH '%s' ./audit-bin; cat scratch",
+                "printf '%n' PATH", 'cp /bin/rm audit-bin/cat',
+                "grep ',' < sample.csv", "cat sample.csv | grep ','", "grep ','",
+                "printf old > conf/settings.toml"):
+            with self.subTest(command=command):
+                items = copy.deepcopy(original)
+                # The exact synthetic turn and final stay complete and correct.
+                # No shell runs; correct signed finals cannot waive behavior.
+                items[5:5] = [dict(type='tool_call', callId='audit', tool='bash', input={'command':command}),
+                              dict(type='tool_result', callId='audit', status='completed', result='[exit code: 0]')]
+                with self.changed_events(path, items):
+                    with self.assertRaisesRegex(ValueError, 'hard evidence/tool/behavior failure'):
+                        verify(self.policy, self.packet, self.mapping, self.receipts)
+
     def test_absent_full_run_or_stale_run_rejected(self):
         path = self.extra_path
         path.rename(path.with_suffix('.held'))

@@ -4,7 +4,7 @@ import shlex
 import json
 from pathlib import Path
 from contract import FILL, MANIFEST, NOTICE
-from command_audit import tool_errors
+from command_audit import bash_input_errors, tool_errors
 
 
 def lines(text):
@@ -583,17 +583,8 @@ def archival_move(call, files, initial, cwd):
     Every selected fixture must be absent at source and byte-identical at target.
     """
     args = call.get('input')
-    if (call.get('tool') != 'bash' or not isinstance(args, dict) or
-            set(args) - {'command', 'workdir'} or not isinstance(args.get('command'), str)):
+    if call.get('tool') != 'bash' or bash_input_errors(args, cwd):
         return False
-    if 'workdir' in args:
-        if cwd is None or not isinstance(args['workdir'], str):
-            return False
-        try:
-            if (Path(cwd) / args['workdir']).resolve() != Path(cwd).resolve():
-                return False
-        except (OSError, RuntimeError, ValueError):
-            return False
     dest = r'(?:\./)?trash/?'
     source = r'(?:\./)?part(?:[0-9]+|\*)\.log'
     match = re.fullmatch(

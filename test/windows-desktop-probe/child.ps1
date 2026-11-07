@@ -154,16 +154,18 @@ function Test-CandidateProfileValue {
     return $values.Count -eq 1 -and $values[0].Value -match '^    minTokens: 24000[ ]*(?:#.*)?$'
 }
 function Assert-CandidateIdentity {
-    foreach ($file in @('package.json','index.js','shadow.js')) {
+    foreach ($file in @('package.json','index.js','shadow.js','gate.js')) {
         if (-not (Test-Path -LiteralPath (Join-Path $installed $file) -PathType Leaf)) { throw 'Candidate installation is missing required files in the desktop profile.' }
     }
     $package = Get-Content -LiteralPath (Join-Path $installed 'package.json') -Raw | ConvertFrom-Json
     $engineHash = (Get-FileHash -LiteralPath (Join-Path $installed 'index.js') -Algorithm SHA256).Hash
     $shadowHash = (Get-FileHash -LiteralPath (Join-Path $installed 'shadow.js') -Algorithm SHA256).Hash
+    $gateHash = (Get-FileHash -LiteralPath (Join-Path $installed 'gate.js') -Algorithm SHA256).Hash
     if ($package.name -ne 'dsh-live-compact' -or $package.version -ne '1.1.2' -or
         $engineHash -ne '7d09d88f002dc96b6f0f7622f49ddf8affb4c519e79bf8d1076ee306fab71938' -or
+        $gateHash -ne 'a12df2d3694f1be520f54ea8ec38f43993239ff6affa12924ad2ac318d3f3f79' -or
         $shadowHash -ne '50037db3e442386cca82121b70866a08ba8911f4dae911463e078218ec30974f') { throw 'Desktop installed candidate identity mismatch.' }
-    [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash } |
+    [pscustomobject]@{ CandidateInstalled = $true; Version = $package.version; EngineSHA256 = $engineHash; ShadowSHA256 = $shadowHash; GateSHA256 = $gateHash } |
         ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'installed-candidate-proof.json')
 }
 try {
@@ -260,7 +262,7 @@ try {
     $view = Get-DesktopView 'plugin-manager-proof.json'
     Invoke-RequiredClick 'Add plugin'
     $view = Get-DesktopView 'plugin-install-proof.json'
-    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/1b075587f95786b5d072a21a7918e50972825016/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
+    $candidate = 'https://raw.githubusercontent.com/Tranquillitatis-Lab/dsh-live-compact/d91c2790de3aabea133e111dde98eaf2c10cc0e9/test/windows-runtime/fixtures/dsh-live-compact-1.1.2.tgz'
     if (-not (& (Join-Path $PSScriptRoot 'cdp.ps1') -Endpoint $view.Endpoint -Port $port -PackageAddress $candidate)) { throw 'Cannot enter candidate package address.' }
     Set-ProbeStage 'Installing frozen candidate through official UI'
     Invoke-RequiredClick 'Install'

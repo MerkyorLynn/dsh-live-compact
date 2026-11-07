@@ -107,7 +107,20 @@ try {
     const projected = output.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
     assert.equal(projected.at(-1)?.type, 'final', 'headless final event');
     assert.ok(JSON.stringify(projected.at(-1)).includes(`SYNTHETIC_FINAL_${stage}`), 'all three replay streams consumed');
-    const result = verifyStage(stage, rows, { denied, expectedSid });
+    let result;
+    try {
+      result = verifyStage(stage, rows, { denied, expectedSid });
+    } catch (error) {
+      const captures = rows.filter((row) => row.kind === 'capture').slice(0, 12).map((row) => ({
+        callId: row.callId === `${stage}-long` ? 'long' : row.callId === `${stage}-after` ? 'after' : 'other',
+        ok: row.ok,
+        reason: typeof row.reason === 'string' && /^[a-z0-9_.-]{1,64}$/i.test(row.reason) ? row.reason : null,
+      }));
+      const warnings = rows.filter((row) => row.kind === 'shadow-warning').slice(0, 6).map((row) =>
+        row.message.match(/ESHADOWACCESS (?:dir|file) exit [0-9]+/)?.[0] ?? 'other shadow warning');
+      console.error(JSON.stringify({ stage, captures, warnings }));
+      throw error;
+    }
     assert.equal(projected.filter((event) => event.type === 'tool_call').length, 2, 'real CLI tool-call projection');
     assert.ok(projected.filter((event) => event.type === 'tool_result').length >= 2, 'real CLI tool-result projection (may include prune replacements)');
     if (denied) {

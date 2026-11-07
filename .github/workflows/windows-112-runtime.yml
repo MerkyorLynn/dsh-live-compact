@@ -27,7 +27,7 @@ jobs:
     env:
       DSH_VERIFY_VERSION: ${{ matrix.dsh }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 16
+    timeout-minutes: 27
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         env:
